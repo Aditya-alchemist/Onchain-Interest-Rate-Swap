@@ -1,46 +1,55 @@
 # HedgeFi
 
-On-chain fixed-income infrastructure for collateralized lending, interest-rate hedging, tokenized debt trading, and atomic DvP settlement.
+HedgeFi is an on-chain fixed-income infrastructure protocol for collateralized lending, interest-rate hedging, tokenized debt trading, and atomic Delivery-versus-Payment settlement.
+
+## Stack
+
+- Smart contracts: Solidity + Foundry
+- Frontend: React + Vite + TypeScript + ethers.js
+- Wallet: MetaMask via ethers BrowserProvider
+- Bots: Python + Web3.py
+- Oracle: Chainlink Price Feeds
+- Network: Base Sepolia or Ethereum Sepolia
 
 ## Structure
 
 ```text
 hedgefi/
 ├── contracts/
-│   ├── lending/
-│   ├── swaps/
-│   ├── settlement/
-│   ├── tokenization/
-│   ├── marketplace/
-│   ├── oracle/
-│   ├── liquidation/
-│   ├── governance/
-│   └── libraries/
-├── backend/
-│   ├── api/
-│   ├── services/
-│   ├── ai/
-│   ├── models/
-│   └── db/
-├── bots/
-│   ├── keeper/
-│   ├── settlement/
-│   ├── liquidation/
-│   └── indexer/
+│   ├── src/
+│   ├── script/
+│   ├── test/
+│   └── lib/
 ├── frontend/
-│   ├── app/
-│   ├── components/
-│   ├── hooks/
-│   ├── lib/
-│   └── public/
-├── shared/
-│   ├── abis/
-│   ├── types/
-│   └── constants/
-└── docs/
-    ├── architecture.md
-    ├── protocol.md
-    ├── dvp.md
-    ├── swaps.md
-    └── deployment.md
+│   ├── src/
+│   │   ├── pages/
+│   │   ├── components/
+│   │   ├── hooks/
+│   │   └── lib/
+│   └── package.json
+└── bots/
+    ├── oracle_keeper.py
+    ├── settlement_keeper.py
+    ├── liquidation_keeper.py
+    ├── scheduler.py
+    ├── utils.py
+    ├── config.py
+    └── requirements.txt
+```
+
+## Local Setup
+
+```bash
+cd contracts
+forge install OpenZeppelin/openzeppelin-contracts
+forge install smartcontractkit/chainlink
+forge install transmissions11/solmate
+
+cd ../frontend
+npm install
+
+cd ../bots
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 ```

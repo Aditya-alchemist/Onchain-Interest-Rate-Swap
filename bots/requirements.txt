@@ -1,0 +1,8 @@
+web3
+eth-account
+APScheduler
+python-dotenv
+requests
+pandas
+numpy
+loguru
