@@ -1,0 +1,38 @@
+package cmd_test
+
+import (
+	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/smartcontractkit/chainlink-common/pkg/sqlutil"
+	client2 "github.com/smartcontractkit/chainlink-evm/pkg/client"
+	"github.com/smartcontractkit/chainlink/v2/core/cmd"
+	"github.com/smartcontractkit/chainlink/v2/core/internal/cltest"
+	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils"
+	"github.com/smartcontractkit/chainlink/v2/core/services/chainlink"
+)
+
+func newRandChainID() *sqlutil.Big {
+	return sqlutil.New(testutils.NewRandomEVMChainID())
+}
+
+func TestShell_IndexEVMChains(t *testing.T) {
+	t.Parallel()
+
+	app := startNewApplicationV2(t, func(c *chainlink.Config, s *chainlink.Secrets) {
+		c.EVM[0].Enabled = new(true)
+		c.EVM[0].NonceAutoSync = new(false)
+		c.EVM[0].BalanceMonitor.Enabled = new(false)
+	})
+	client, r := app.NewShellAndRenderer()
+
+	require.NoError(t, cmd.NewChainClient(client, "evm").IndexChains(cltest.EmptyCLIContext()))
+	chains := *r.Renders[0].(*cmd.ChainPresenters)
+	require.Len(t, chains, 1)
+	c := chains[0]
+	assert.Equal(t, strconv.Itoa(client2.NullClientChainID), c.ID)
+	assertTableRenders(t, r)
+}

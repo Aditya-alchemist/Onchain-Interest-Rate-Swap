@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function Marketplace() {
-  return <section>Marketplace</section>;
+  return <div>Marketplace</div>;
 }

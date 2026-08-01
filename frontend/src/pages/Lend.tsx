@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function Lend() {
-  return <section>Lend</section>;
+  return <div>Lend</div>;
 }

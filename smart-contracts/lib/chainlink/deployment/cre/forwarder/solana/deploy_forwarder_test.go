@@ -1,0 +1,279 @@
+package solana
+
+import (
+	"crypto/ecdsa"
+	"math/big"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	chain_selectors "github.com/smartcontractkit/chain-selectors"
+	"github.com/smartcontractkit/wsrpc/logger"
+	"github.com/stretchr/testify/require"
+
+	cldfproposalutils "github.com/smartcontractkit/chainlink-deployments-framework/engine/cld/mcms/proposalutils"
+	cldftesthelpers "github.com/smartcontractkit/chainlink-deployments-framework/engine/cld/mcms/proposalutils/testhelpers"
+
+	cldfchain "github.com/smartcontractkit/chainlink-deployments-framework/chain"
+	"github.com/smartcontractkit/chainlink-deployments-framework/datastore"
+	"github.com/smartcontractkit/chainlink-deployments-framework/engine/test/environment"
+	"github.com/smartcontractkit/chainlink-deployments-framework/engine/test/onchain"
+	"github.com/smartcontractkit/chainlink-deployments-framework/engine/test/runtime"
+
+	solanaMCMS "github.com/smartcontractkit/chainlink/deployment/common/changeset/solana/mcms"
+	"github.com/smartcontractkit/chainlink/deployment/cre/forwarder"
+	"github.com/smartcontractkit/chainlink/deployment/helpers"
+	"github.com/smartcontractkit/chainlink/deployment/internal/soltestutils"
+	"github.com/smartcontractkit/chainlink/deployment/keystone/changeset/test"
+)
+
+const (
+	testQualifier = "test-deploy"
+)
+
+// Tests with transfer upgrade authority require downloading and building artifacts
+// from chainlink-solana
+// so we disable them in CI since it will take too long to run
+func TestDeployForwarder(t *testing.T) {
+	skipInCI(t)
+
+	t.Parallel()
+
+	selector := chain_selectors.TEST_22222222222222222222222222222222222222222222.Selector
+	rt, err := runtime.New(t.Context(), runtime.WithEnvOpts(
+		environment.WithSolanaContainer(t, []uint64{selector}, t.TempDir(), map[string]string{}),
+		environment.WithLogger(logger.Test(t)),
+	))
+	require.NoError(t, err)
+
+	chain := rt.Environment().BlockChains.SolanaChains()[selector]
+
+	t.Run("should deploy forwarder", func(t *testing.T) {
+		err := rt.Exec(
+			runtime.ChangesetTask(DeployForwarder{},
+				&DeployForwarderRequest{
+					ChainSel:  selector,
+					Qualifier: testQualifier,
+					Version:   "1.0.0",
+					BuildConfig: &helpers.BuildSolanaConfig{
+						GitCommitSha:   "3305b4d55b5469e110133e5a36e5600aadf436fb",
+						DestinationDir: chain.ProgramsPath,
+						LocalBuild:     helpers.LocalBuildConfig{BuildLocally: true, CreateDestinationDir: true},
+					},
+				},
+			),
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("should pass upgrade authority", func(t *testing.T) {
+		err := rt.Exec(
+			runtime.ChangesetTask(SetForwarderUpgradeAuthority{},
+				&SetForwarderUpgradeAuthorityRequest{
+					ChainSel:            selector,
+					Qualifier:           testQualifier,
+					Version:             "1.0.0",
+					NewUpgradeAuthority: chain.DeployerKey.PublicKey(),
+				},
+			),
+		)
+		require.NoError(t, err)
+	})
+}
+
+func TestConfigureForwarder(t *testing.T) {
+	t.Parallel()
+
+	// Setup the solana programs
+	programsPath := t.TempDir()
+	solSel := chain_selectors.TEST_22222222222222222222222222222222222222222222.Selector
+	programIDs := soltestutils.LoadKeystonePrograms(t, programsPath)
+
+	t.Run("set config without mcms", func(t *testing.T) {
+		// Initialize a solana chain
+		solChain, err := onchain.
+			NewSolanaContainerLoader(programsPath, programIDs).
+			Load(t, []uint64{solSel})
+		require.NoError(t, err)
+
+		// Configure don without the solana chain
+		te := test.SetupContractTestEnv(t, test.EnvWrapperConfig{
+			WFDonConfig:     test.DonConfig{Name: "wfDon", N: 4, ChainSelectors: []uint64{solSel}},
+			AssetDonConfig:  test.DonConfig{Name: "assetDon", N: 4},
+			WriterDonConfig: test.DonConfig{Name: "writerDon", N: 4},
+			NumChains:       1,
+		})
+
+		donConfig := forwarder.DonConfiguration{
+			Name:    "test-wf-don",
+			ID:      1,
+			F:       1,
+			Version: 1,
+			NodeIDs: te.Env.NodeIDs,
+		}
+		// Inject the solana chain into the environment
+		blockchains := make(map[uint64]cldfchain.BlockChain)
+		blockchains[solSel] = solChain[0]
+		for _, ch := range te.Env.BlockChains.All() {
+			blockchains[ch.ChainSelector()] = ch
+		}
+		te.Env.BlockChains = cldfchain.NewBlockChains(blockchains)
+
+		// Populate the datastore with the keystone forwarder contract
+		ds := datastore.NewMemoryDataStore()
+		err = ds.AddressRefStore.Add(datastore.AddressRef{
+			Address:       programIDs["keystone_forwarder"],
+			ChainSelector: solSel,
+			Type:          ForwarderContract,
+			Version:       semver.MustParse("1.0.0"),
+			Qualifier:     testQualifier,
+		})
+		require.NoError(t, err)
+		te.Env.DataStore = ds.Seal()
+
+		// We set up a new runtime to execute the changesets based on the previously set up environment
+		rt := runtime.NewFromEnvironment(te.Env)
+		require.NoError(t, err)
+
+		var wfNodes []string
+		for _, id := range te.GetP2PIDs("wfDon") {
+			wfNodes = append(wfNodes, id.String())
+		}
+		donConfig.NodeIDs = wfNodes
+		err = rt.Exec(
+			runtime.ChangesetTask(DeployForwarder{},
+				&DeployForwarderRequest{
+					ChainSel:  solSel,
+					Qualifier: testQualifier,
+					Version:   "1.0.0",
+				},
+			),
+			runtime.ChangesetTask(ConfigureForwarders{},
+				&ConfigureForwarderRequest{
+					DON:       donConfig,
+					Version:   "1.0.0",
+					Qualifier: testQualifier,
+				},
+			),
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("set config with mcms", func(t *testing.T) {
+		// Initialize a solana chain
+		solChains, err := onchain.
+			NewSolanaContainerLoader(programsPath, programIDs).
+			Load(t, []uint64{solSel})
+		require.NoError(t, err)
+
+		te := test.SetupContractTestEnv(t, test.EnvWrapperConfig{
+			WFDonConfig:     test.DonConfig{Name: "wfDon", N: 4, ChainSelectors: []uint64{solSel}},
+			AssetDonConfig:  test.DonConfig{Name: "assetDon", N: 4},
+			WriterDonConfig: test.DonConfig{Name: "writerDon", N: 4},
+			NumChains:       1,
+		})
+
+		solChainsBySel := cldfchain.NewBlockChainsFromSlice(solChains).SolanaChains()
+		solChain, ok := solChainsBySel[solSel]
+		require.True(t, ok, "solana loader must return a solana chain for selector %d", solSel)
+		require.NotEmpty(t, solChain.ProgramsPath, "programs dir required for solana program deploy CLI")
+
+		// Inject the solana chain into the environment (merge EVM first, then sol so sol is never overwritten).
+		blockchains := make(map[uint64]cldfchain.BlockChain)
+		for _, ch := range te.Env.BlockChains.All() {
+			blockchains[ch.ChainSelector()] = ch
+		}
+		blockchains[solSel] = solChain
+		te.Env.BlockChains = cldfchain.NewBlockChains(blockchains)
+
+		ds := datastore.NewMemoryDataStore()
+		soltestutils.RegisterMCMSPrograms(t, solSel, ds)
+
+		err = ds.AddressRefStore.Add(datastore.AddressRef{
+			Address:       programIDs["keystone_forwarder"],
+			ChainSelector: solSel,
+			Type:          ForwarderContract,
+			Version:       semver.MustParse("1.0.0"),
+			Qualifier:     testQualifier,
+		})
+		require.NoError(t, err)
+
+		te.Env.DataStore = ds.Seal()
+
+		rt := runtime.NewFromEnvironment(te.Env)
+		require.NoError(t, err)
+
+		mcmsState, err := solanaMCMS.DeployMCMSWithTimelockProgramsSolanaV2(
+			rt.Environment(),
+			ds,
+			solChain,
+			cldfproposalutils.MCMSWithTimelockConfig{
+				Canceller:        cldftesthelpers.SingleGroupMCMS(t),
+				Proposer:         cldftesthelpers.SingleGroupMCMS(t),
+				Bypasser:         cldftesthelpers.SingleGroupMCMS(t),
+				TimelockMinDelay: big.NewInt(0),
+			},
+		)
+		require.NoError(t, err)
+
+		soltestutils.FundSignerPDAs(t, solChain, mcmsState)
+
+		var wfNodes []string
+		for _, id := range te.GetP2PIDs("wfDon") {
+			wfNodes = append(wfNodes, id.String())
+		}
+
+		// Deploy the forwarder and transfer ownership to the MCMS
+		err = rt.Exec(
+			runtime.ChangesetTask(DeployForwarder{},
+				&DeployForwarderRequest{
+					ChainSel:  solSel,
+					Qualifier: testQualifier,
+					Version:   "1.0.0",
+				},
+			),
+			runtime.ChangesetTask(TransferOwnershipForwarder{},
+				&TransferOwnershipForwarderRequest{
+					ChainSel:  solSel,
+					MCMSCfg:   cldfproposalutils.TimelockConfig{MinDelay: 1 * time.Second},
+					Qualifier: testQualifier,
+					Version:   "1.0.0",
+				},
+			),
+			runtime.SignAndExecuteProposalsTask([]*ecdsa.PrivateKey{cldftesthelpers.TestXXXMCMSSigner}),
+		)
+		require.NoError(t, err)
+
+		donConfig := forwarder.DonConfiguration{
+			Name:    "test-wf-don",
+			ID:      1,
+			F:       1,
+			Version: 1,
+			NodeIDs: wfNodes,
+		}
+
+		// Configure the forwarder using MCMS
+		err = rt.Exec(
+			runtime.ChangesetTask(ConfigureForwarders{},
+				&ConfigureForwarderRequest{
+					DON:       donConfig,
+					Version:   "1.0.0",
+					Qualifier: testQualifier,
+					MCMS: &cldfproposalutils.TimelockConfig{
+						MinDelay: time.Second,
+					},
+				},
+			),
+			runtime.SignAndExecuteProposalsTask([]*ecdsa.PrivateKey{cldftesthelpers.TestXXXMCMSSigner}),
+		)
+		require.NoError(t, err)
+	})
+}
+
+func skipInCI(t *testing.T) {
+	ci := os.Getenv("CI") == "true"
+	if ci {
+		t.Skip("Skipping in CI")
+	}
+}

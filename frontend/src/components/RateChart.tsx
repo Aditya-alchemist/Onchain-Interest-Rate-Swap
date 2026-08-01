@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function RateChart() {
-  return <div>Rate Chart</div>;
+  return <div>RateChart</div>;
 }

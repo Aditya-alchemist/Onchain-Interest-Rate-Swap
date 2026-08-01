@@ -1,0 +1,118 @@
+package view
+
+import (
+	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/stretchr/testify/require"
+
+	chainselectors "github.com/smartcontractkit/chain-selectors"
+	mcmschangesets "github.com/smartcontractkit/cld-changesets/legacy/mcms/changesets"
+
+	cldf "github.com/smartcontractkit/chainlink-deployments-framework/deployment"
+	cldfproposalutils "github.com/smartcontractkit/chainlink-deployments-framework/engine/cld/mcms/proposalutils"
+	cldftesthelpers "github.com/smartcontractkit/chainlink-deployments-framework/engine/cld/mcms/proposalutils/testhelpers"
+	"github.com/smartcontractkit/chainlink-deployments-framework/engine/test/environment"
+	"github.com/smartcontractkit/chainlink-deployments-framework/engine/test/runtime"
+
+	"github.com/smartcontractkit/chainlink/deployment/vault/changeset"
+	"github.com/smartcontractkit/chainlink/deployment/vault/changeset/types"
+)
+
+func TestVault_NoChains(t *testing.T) {
+	t.Parallel()
+
+	env, err := environment.New(t.Context())
+	require.NoError(t, err)
+
+	viewMarshaler, err := Vault(*env, nil)
+	require.NoError(t, err)
+	require.NotNil(t, viewMarshaler)
+
+	view := viewMarshaler.(*VaultView)
+	require.Empty(t, view.TimelockBalances)
+	require.Empty(t, view.WhitelistedAddresses)
+}
+
+func TestGenerateVaultView_WithoutTimelock(t *testing.T) {
+	t.Parallel()
+
+	selectors := []uint64{chainselectors.TEST_90000001.Selector}
+	env, err := environment.New(t.Context(),
+		environment.WithEVMSimulated(t, selectors),
+	)
+	require.NoError(t, err)
+
+	view, err := GenerateVaultView(*env, selectors)
+	require.NoError(t, err)
+	require.NotNil(t, view)
+
+	require.Empty(t, view.TimelockBalances)
+
+	require.Len(t, view.WhitelistedAddresses, len(selectors))
+	for _, sel := range selectors {
+		require.Empty(t, view.WhitelistedAddresses[sel])
+	}
+}
+
+func TestGenerateVaultView_WithMCMSAndWhitelist(t *testing.T) {
+	t.Parallel()
+
+	selectors := []uint64{chainselectors.TEST_90000001.Selector, chainselectors.TEST_90000002.Selector}
+	rt, err := runtime.New(t.Context(), runtime.WithEnvOpts(
+		environment.WithEVMSimulated(t, selectors),
+	))
+	require.NoError(t, err)
+
+	setupMCMS(t, rt, selectors)
+
+	whitelistByChain := map[uint64][]types.WhitelistAddress{}
+	for i, sel := range selectors {
+		addr := common.HexToAddress("0x1111111111111111111111111111111111111111")
+		if i == 1 {
+			addr = common.HexToAddress("0x2222222222222222222222222222222222222222")
+		}
+		whitelistByChain[sel] = []types.WhitelistAddress{{
+			Address:     addr.Hex(),
+			Description: "recipient",
+			Labels:      []string{"test"},
+		}}
+	}
+
+	err = rt.Exec(
+		runtime.ChangesetTask(
+			changeset.SetWhitelistChangeset,
+			types.SetWhitelistConfig{WhitelistByChain: whitelistByChain},
+		),
+	)
+	require.NoError(t, err)
+
+	view, err := GenerateVaultView(rt.Environment(), selectors)
+	require.NoError(t, err)
+	require.NotNil(t, view)
+
+	require.Len(t, view.TimelockBalances, len(selectors))
+	require.Len(t, view.WhitelistedAddresses, len(selectors))
+	for _, sel := range selectors {
+		entries := view.WhitelistedAddresses[sel]
+		require.Len(t, entries, 1)
+		require.Equal(t, whitelistByChain[sel][0].Address, entries[0].Address)
+	}
+}
+
+func setupMCMS(t *testing.T, rt *runtime.Runtime, chainSelectors []uint64) {
+	t.Helper()
+
+	timelockCfgs := make(map[uint64]cldfproposalutils.MCMSWithTimelockConfig)
+	for _, sel := range chainSelectors {
+		timelockCfgs[sel] = cldftesthelpers.SingleGroupTimelockConfig(t)
+	}
+
+	err := rt.Exec(
+		runtime.ChangesetTask(
+			cldf.CreateLegacyChangeSet(mcmschangesets.DeployMCMSWithTimelockV2),
+			timelockCfgs,
+		),
+	)
+	require.NoError(t, err)
+}

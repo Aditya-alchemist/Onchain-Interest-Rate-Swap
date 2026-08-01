@@ -1,0 +1,21 @@
+set fallback
+
+# Default: show available recipes
+default:
+    just --list
+
+clean:
+    rm -rf compose/ blockscout/
+
+build-fakes:
+    just fakes/build
+
+push-fakes registry:
+    just fakes/push {{registry}}
+
+# Rebuild CLI
+cli:
+    cd cmd/cl && go install -ldflags="-X main.Version=1.0.0" . && cd - > /dev/null || exit 1
+
+lint:
+    golangci-lint run ./... --fix

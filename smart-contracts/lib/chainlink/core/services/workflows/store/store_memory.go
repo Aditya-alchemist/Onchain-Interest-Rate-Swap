@@ -1,0 +1,238 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
+	commonservices "github.com/smartcontractkit/chainlink-common/pkg/services"
+)
+
+const (
+	// defaultPruneInterval is the default interval between pruning completed executions
+	defaultPruneInterval = 30 * time.Second
+
+	// maximumExecutionAge is the default maximum age of an execution before it is considered expired and eligible for pruning
+	// regardless of its status
+	maximumExecutionAge = 24 * time.Hour
+)
+
+// InMemoryStore is an in-memory implementation of the Store interface used to store workflow execution states.
+// The store always returns a copy of the current workflow execution state in the store such that it is effectively an
+// immutable object as state modification only occurs within the store.
+// TODO make the WorkflowExecution type immutable to reflect the latter fact and prevent unexpected side effects from
+// TODO code being added that modifies WorkflowExecution objects outside of the store. (https://smartcontract-it.atlassian.net/browse/CAPPL-682)
+type InMemoryStore struct {
+	lggr logger.Logger
+	commonservices.StateMachine
+	idToExecution     map[string]*WorkflowExecution
+	mu                sync.RWMutex
+	shutdownWaitGroup sync.WaitGroup
+	chStop            commonservices.StopChan
+
+	clock clockwork.Clock
+
+	// pruneInterval is the interval between pruning completed (and expired) executions
+	pruneInterval time.Duration
+
+	// maximumExecutionAge is the maximum age of an execution before it is considered expired and eligible for pruning
+	// regardless of its status
+	maximumExecutionAge time.Duration
+}
+
+func NewInMemoryStore(lggr logger.Logger, clock clockwork.Clock) *InMemoryStore {
+	return NewInMemoryStoreWithPruneConfiguration(lggr, clock, defaultPruneInterval, maximumExecutionAge)
+}
+
+func NewInMemoryStoreWithPruneConfiguration(lggr logger.Logger, clock clockwork.Clock, pruneFrequency time.Duration,
+	maximumExecutionAge time.Duration) *InMemoryStore {
+	return &InMemoryStore{lggr: lggr, idToExecution: map[string]*WorkflowExecution{}, clock: clock, chStop: make(chan struct{}),
+		pruneInterval: pruneFrequency, maximumExecutionAge: maximumExecutionAge}
+}
+
+// Add adds a new execution state under the given executionID
+func (s *InMemoryStore) Add(ctx context.Context, steps map[string]*WorkflowExecutionStep,
+	executionID string, workflowID string, status string) (WorkflowExecution, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.idToExecution[executionID]
+	if ok {
+		return WorkflowExecution{}, fmt.Errorf("execution ID %s: %w", executionID, ErrDuplicateExecution)
+	}
+
+	now := s.clock.Now()
+	execution := &WorkflowExecution{
+		Steps:       steps,
+		WorkflowID:  workflowID,
+		ExecutionID: executionID,
+		Status:      status,
+		CreatedAt:   &now,
+		UpdatedAt:   &now,
+	}
+
+	s.idToExecution[execution.ExecutionID] = execution
+
+	return execution.DeepCopy(), nil
+}
+
+// UpsertStep updates a step for the given executionID
+func (s *InMemoryStore) UpsertStep(ctx context.Context, step *WorkflowExecutionStep) (WorkflowExecution, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	execution, ok := s.idToExecution[step.ExecutionID]
+	if !ok {
+		return WorkflowExecution{}, fmt.Errorf("could not find execution %s", step.ExecutionID)
+	}
+
+	now := s.clock.Now()
+	execution.UpdatedAt = &now
+
+	execution.Steps[step.Ref] = step
+	return execution.DeepCopy(), nil
+}
+
+// FinishExecution marks the execution as finished with the given status
+func (s *InMemoryStore) FinishExecution(ctx context.Context, executionID string, status string) (WorkflowExecution, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	execution, ok := s.idToExecution[executionID]
+	if !ok {
+		return WorkflowExecution{}, fmt.Errorf("could not find execution %s", executionID)
+	}
+
+	if !isCompletedStatus(status) {
+		return WorkflowExecution{}, fmt.Errorf("invalid status for a finished execution %s", status)
+	}
+
+	now := s.clock.Now()
+	execution.UpdatedAt = &now
+	execution.Status = status
+	execution.FinishedAt = &now
+
+	return execution.DeepCopy(), nil
+}
+
+func isCompletedStatus(status string) bool {
+	switch status {
+	case StatusCompleted, StatusErrored, StatusTimeout, StatusCompletedEarlyExit:
+		return true
+	}
+	return false
+}
+
+// Get gets the state for the given executionID
+func (s *InMemoryStore) Get(ctx context.Context, executionID string) (WorkflowExecution, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	execution, ok := s.idToExecution[executionID]
+	if !ok {
+		return WorkflowExecution{}, fmt.Errorf("could not find execution %s", executionID)
+	}
+
+	return execution.DeepCopy(), nil
+}
+
+func (s *InMemoryStore) Start(context.Context) error {
+	return s.StartOnce("InMemoryStore", func() error {
+		s.shutdownWaitGroup.Add(1)
+		go s.pruneExpiredExecutionEntries()
+		return nil
+	})
+}
+
+func (s *InMemoryStore) Close() error {
+	return s.StopOnce("InMemoryStore", func() error {
+		close(s.chStop)
+		s.shutdownWaitGroup.Wait()
+		return nil
+	})
+}
+
+func (s *InMemoryStore) Ready() error {
+	return nil
+}
+
+func (s *InMemoryStore) HealthReport() map[string]error {
+	return map[string]error{s.Name(): s.Healthy()}
+}
+
+func (s *InMemoryStore) Name() string {
+	return "WorkflowStore"
+}
+
+func (s *InMemoryStore) DeleteByWorkflowID(_ context.Context, workflowID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Build a new map instead of deleting in-place so the old backing array
+	// becomes eligible for GC.  Go maps never shrink their bucket storage
+	// after delete, which can retain significant memory after bulk removals.
+	newMap := make(map[string]*WorkflowExecution, len(s.idToExecution))
+	for id, state := range s.idToExecution {
+		if state.WorkflowID != workflowID {
+			newMap[id] = state
+		}
+	}
+	s.idToExecution = newMap
+	return nil
+}
+
+func (s *InMemoryStore) pruneExpiredExecutionEntries() {
+	defer s.shutdownWaitGroup.Done()
+	ticker := s.clock.NewTicker(s.pruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.chStop:
+			return
+		case <-ticker.Chan():
+			s.pruneCompletedAndExpiredExecutions()
+		}
+	}
+}
+
+// pruneCompletedAndExpiredExecutions removes completed executions and non-completed executions
+// older than maximumExecutionAge. When it prunes anything it rebuilds the map rather than
+// deleting in place, so the old bucket storage becomes eligible for GC: Go maps never shrink
+// after deletes, which strands memory once the store has churned through many executions.
+// See https://100go.co/28-maps-memory-leaks/
+func (s *InMemoryStore) pruneCompletedAndExpiredExecutions() {
+	expirationTime := s.clock.Now().Add(-s.maximumExecutionAge)
+
+	s.mu.Lock()
+	remaining := make(map[string]*WorkflowExecution, len(s.idToExecution))
+	prunedCompletedCount := 0
+	// Non-terminated executions older than the maximum age shouldn't normally exist; we prune
+	// them out of caution, preserving the behaviour of the old store.
+	var prunedExpiredIDs []string
+	for id, state := range s.idToExecution {
+		switch {
+		case isCompletedStatus(state.Status):
+			prunedCompletedCount++
+		case state.UpdatedAt.Before(expirationTime):
+			prunedExpiredIDs = append(prunedExpiredIDs, id)
+		default:
+			remaining[id] = state
+		}
+	}
+	prunedCount := prunedCompletedCount + len(prunedExpiredIDs)
+	if prunedCount > 0 {
+		s.idToExecution = remaining
+	}
+	remainingExecutions := len(s.idToExecution)
+	s.mu.Unlock()
+
+	if prunedCount > 0 {
+		s.lggr.Infow("Pruned workflow execution entries",
+			"prunedCompletedCount", prunedCompletedCount,
+			"prunedExpiredCount", len(prunedExpiredIDs),
+			"remainingExecutions", remainingExecutions)
+	}
+	if len(prunedExpiredIDs) > 0 {
+		s.lggr.Warnw("Found and pruned non completed workflow executions older than the maximum execution age",
+			"maximumExecutionAge", s.maximumExecutionAge, "prunedExecutionIDs", prunedExpiredIDs)
+	}
+}

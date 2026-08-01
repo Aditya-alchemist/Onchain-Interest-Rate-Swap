@@ -1,0 +1,93 @@
+name: Notify Slack Jobs Result
+description: Posts a compact Slack notification for a workflow job result
+  (status, job name, link to run, slack_channel_id and slack_bot_token).
+inputs:
+  status:
+    description: "Job conclusion, e.g. success, failure, cancelled, skipped
+      (typically needs.<job>.result)"
+    required: true
+  job_name:
+    description: "Display name for the job in the message"
+    required: true
+  run_url:
+    description: "URL to the workflow run (e.g.
+      format('https://github.com/{0}/actions/runs/{1}', github.repository,
+      github.run_id))"
+    required: true
+  slack_thread_ts:
+    description: "Optional Slack thread timestamp to reply in a thread"
+    required: false
+    default: ""
+  slack_channel_id:
+    description: "Slack channel ID to post to"
+    required: true
+  slack_bot_token:
+    description: "Slack bot token to use for posting"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build Slack payload
+      id: slack-payload
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+        JOB_NAME: ${{ inputs.job_name }}
+        RUN_URL: ${{ inputs.run_url }}
+        THREAD_TS: ${{ inputs.slack_thread_ts }}
+        SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+      run: |
+        set -euo pipefail
+
+        case "${STATUS}" in
+          success)   EMOJI="✅" ;;
+          failure)   EMOJI="❌" ;;
+          cancelled) EMOJI="⚠️" ;;
+          skipped)   EMOJI="⏭️" ;;
+          *)         EMOJI="❔" ;;
+        esac
+
+        PAYLOAD_FILE="${RUNNER_TEMP:-/tmp}/notify-slack-jobs-result.json"
+
+        jq -n \
+          --arg channel "${SLACK_CHANNEL_ID}" \
+          --arg job "$JOB_NAME" \
+          --arg emoji "$EMOJI" \
+          --arg status "$STATUS" \
+          --arg url "$RUN_URL" \
+          --arg thread "$THREAD_TS" \
+          --arg text "${JOB_NAME} — ${STATUS}" \
+          '{
+            channel: $channel,
+            text: $text,
+            blocks: [
+              {
+                type: "header",
+                text: {
+                  type: "plain_text",
+                  text: ($job + " " + $emoji),
+                  emoji: true
+                }
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: ("Status: `" + $status + "`\n<" + $url + "|View workflow run>")
+                }
+              }
+            ]
+          }
+          | if $thread != "" then .thread_ts = $thread else . end' \
+          > "$PAYLOAD_FILE"
+
+        echo "file=$PAYLOAD_FILE" >> "$GITHUB_OUTPUT"
+
+    - name: Post to Slack
+      uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+      with:
+        errors: "true"
+        method: chat.postMessage
+        token: ${{ inputs.slack_bot_token }}
+        payload-file-path: ${{ steps.slack-payload.outputs.file }}

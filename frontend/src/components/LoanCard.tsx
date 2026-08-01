@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function LoanCard() {
-  return <article>Loan Card</article>;
+  return <div>LoanCard</div>;
 }

@@ -1,0 +1,1052 @@
+env CL_EVM_CMD=chainlink-evm
+env CL_SOLANA_CMD=chainlink-solana
+
+# start node
+exec sh -c 'eval "echo \"$(cat config.toml.tmpl)\" > config.toml"'
+exec chainlink node -c config.toml start -p password -a creds &
+
+# initialize client
+env NODEURL=http://localhost:$PORT
+exec curl --retry 10 --retry-max-time 60 --retry-connrefused $NODEURL
+exec chainlink --remote-node-url $NODEURL admin login -file creds --bypass-version-check
+
+exec chainlink --remote-node-url $NODEURL health
+cmp stdout out.txt
+
+exec chainlink --remote-node-url $NODEURL health -json
+cp stdout compact.json
+exec jq . compact.json
+cmp stdout out.json
+
+exec chainlink --remote-node-url $NODEURL health -failing
+cmp stdout out-unhealthy.txt
+
+exec chainlink --remote-node-url $NODEURL health -f -json
+cp stdout compact.json
+exec jq . compact.json
+cmp stdout out-unhealthy.json
+
+-- go:build.integration --
+-- testdb.txt --
+CL_DATABASE_URL
+-- testport.txt --
+PORT
+
+-- password --
+T.tLHkcmwePT/p,]sYuntjwHKAsrhm#4eRs4LuKHwvHejWYAC2JP4M8HimwgmbaZ
+-- creds --
+notreal@fakeemail.ch
+fj293fbBnlQ!f9vNs
+
+-- config.toml.tmpl --
+[Webserver]
+HTTPPort = $PORT
+
+[[Aptos]]
+ChainID = '4'
+
+[[Aptos.Nodes]]
+Name = 'primary'
+URL = 'http://aptos.blockchain'
+
+[[Cosmos]]
+ChainID = 'Foo'
+
+[[Cosmos.Nodes]]
+Name = 'primary'
+TendermintURL = 'http://tender.mint'
+
+[[EVM]]
+ChainID = '1'
+
+[[EVM.Nodes]]
+Name = 'fake'
+WSURL = 'wss://foo.bar/ws'
+HTTPURL = 'https://foo.bar'
+
+[[Solana]]
+ChainID = 'Bar'
+
+[[Solana.Nodes]]
+Name = 'primary'
+URL = 'http://solana.web'
+
+[[Starknet]]
+ChainID = 'Baz'
+
+[[Starknet.Nodes]]
+Name = 'primary'
+URL = 'http://stark.node'
+
+[[Sui]]
+ChainID = '67'
+NetworkName = 'foo'
+NetworkNameFull = 'foobar'
+
+[[Sui.Nodes]]
+Name = 'node'
+URL = 'https://sui.rpc'
+# Empty gRPC fields keep the plugin on its JSON-RPC path and avoid a nil-pointer deref
+# in the Sui LOOPP's NewRelayer (relayer.go: *nodeConfig.GrpcTarget/GrpcToken). Remove
+# once the chainlink-sui ref is bumped to a version that nil-guards these optional fields.
+GrpcTarget = ''
+GrpcToken = ''
+
+[[Ton]]
+ChainID = '-217'
+
+[[Ton.Nodes]]
+Name = 'node'
+URL = 'liteserver://dummypublickey@127.0.0.1:4443'
+
+[[Tron]]
+ChainID = '1001'
+
+[[Tron.Nodes]]
+Name = 'example'
+URL = 'http://tron.org'
+SolidityURL = 'https://solidity.evm'
+
+[[Stellar]]
+ChainID = 'cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472'
+
+[[Stellar.Nodes]]
+Name = 'primary'
+URL = 'http://stellar.rpc'
+
+-- out.txt --
+ok Aptos.4.RelayerService
+ok Aptos.4.RelayerService.PluginRelayerClient
+ok Aptos.4.RelayerService.PluginRelayerClient.PluginAptos
+ok Aptos.4.RelayerService.PluginRelayerClient.PluginAptos.PluginRelayerConfigEmitter
+ok BridgeStatusReporter
+ok CRE
+ok CRE.DispatcherWrapper
+ok Cosmos.Foo.RelayerService
+ok Cosmos.Foo.RelayerService.PluginRelayerClient
+ok Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos
+ok Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Chain
+ok Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.PluginRelayerConfigEmitter
+ok Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Relayer
+ok Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Txm
+ok EVM.1.RelayerService
+ok EVM.1.RelayerService.PluginRelayerClient
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.BalanceMonitor
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadBroadcaster
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker
+!  EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker.HeadListener
+	Listener connected = false, receiving heads = false
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.LogBroadcaster
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Mailbox.Monitor
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.PluginRelayerConfigEmitter
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Relayer
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.BlockHistoryEstimator
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Broadcaster
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Confirmer
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Finalizer
+ok EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.WrappedEvmEstimator
+ok HeadReporter
+ok Heartbeat
+ok JobSpawner
+ok JobSpecReporter
+ok LLOTransmissionReaper
+ok Mailbox.Monitor
+ok Mercury.WSRPCPool
+ok Mercury.WSRPCPool.CacheSet
+ok NodePlatformBuildInfo
+ok NodePlatformJobInfo
+ok PipelineORM
+ok PipelineRunner
+ok PipelineRunner.BridgeCache
+ok RetirementReportCache
+ok Solana.Bar.RelayerService
+ok Solana.Bar.RelayerService.PluginRelayerClient
+ok Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana
+ok Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain
+ok Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain.BalanceMonitor
+ok Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain.Txm
+ok Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.PluginRelayerConfigEmitter
+ok Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Relayer
+ok StarkNet.Baz.RelayerService
+ok StarkNet.Baz.RelayerService.PluginRelayerClient
+ok StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet
+ok StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Chain
+ok StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Chain.Txm
+ok StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.PluginRelayerConfigEmitter
+ok StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Relayer
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.PluginRelayerConfigEmitter
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain.MultiNode
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain.StellarTxm
+ok Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarRelayer
+ok Sui.67.RelayerService
+ok Sui.67.RelayerService.PluginRelayerClient
+ok Sui.67.RelayerService.PluginRelayerClient.PluginSui
+ok Sui.67.RelayerService.PluginRelayerClient.PluginSui.PluginRelayerConfigEmitter
+ok Sui.67.RelayerService.PluginRelayerClient.PluginSui.SuiRelayer.SuiTxm
+ok Sui.67.RelayerService.PluginRelayerClient.SuiRelayer
+ok TON.-217.RelayerService
+ok TON.-217.RelayerService.PluginRelayerClient
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON.BalanceMonitor
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON.Chain
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON.PluginRelayerConfigEmitter
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON.Relayer
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON.TONLogPoller
+ok TON.-217.RelayerService.PluginRelayerClient.PluginTON.Txm
+ok TelemetryManager
+ok Tron.1001.RelayerService
+ok Tron.1001.RelayerService.PluginRelayerClient
+ok Tron.1001.RelayerService.PluginRelayerClient.PluginTron
+ok Tron.1001.RelayerService.PluginRelayerClient.PluginTron.PluginRelayerConfigEmitter
+ok Tron.1001.RelayerService.PluginRelayerClient.PluginTron.TronRelayer
+ok Tron.1001.RelayerService.PluginRelayerClient.PluginTron.TronTxm
+ok WorkflowStore
+
+-- out-unhealthy.txt --
+!  EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker.HeadListener
+	Listener connected = false, receiving heads = false
+
+-- out.json --
+{
+  "data": [
+    {
+      "type": "checks",
+      "id": "Aptos.4.RelayerService",
+      "attributes": {
+        "name": "Aptos.4.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Aptos.4.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "Aptos.4.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Aptos.4.RelayerService.PluginRelayerClient.PluginAptos",
+      "attributes": {
+        "name": "Aptos.4.RelayerService.PluginRelayerClient.PluginAptos",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Aptos.4.RelayerService.PluginRelayerClient.PluginAptos.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "Aptos.4.RelayerService.PluginRelayerClient.PluginAptos.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "BridgeStatusReporter",
+      "attributes": {
+        "name": "BridgeStatusReporter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "CRE",
+      "attributes": {
+        "name": "CRE",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "CRE.DispatcherWrapper",
+      "attributes": {
+        "name": "CRE.DispatcherWrapper",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Chain",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Chain",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Relayer",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Relayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Txm",
+      "attributes": {
+        "name": "Cosmos.Foo.RelayerService.PluginRelayerClient.PluginCosmos.Txm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService",
+      "attributes": {
+        "name": "EVM.1.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.BalanceMonitor",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.BalanceMonitor",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadBroadcaster",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadBroadcaster",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker.HeadListener",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker.HeadListener",
+        "status": "failing",
+        "output": "Listener connected = false, receiving heads = false"
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.LogBroadcaster",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.LogBroadcaster",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Mailbox.Monitor",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Mailbox.Monitor",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Relayer",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Relayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.BlockHistoryEstimator",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.BlockHistoryEstimator",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Broadcaster",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Broadcaster",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Confirmer",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Confirmer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Finalizer",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.Finalizer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.WrappedEvmEstimator",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.Txm.WrappedEvmEstimator",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "HeadReporter",
+      "attributes": {
+        "name": "HeadReporter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Heartbeat",
+      "attributes": {
+        "name": "Heartbeat",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "JobSpawner",
+      "attributes": {
+        "name": "JobSpawner",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "JobSpecReporter",
+      "attributes": {
+        "name": "JobSpecReporter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "LLOTransmissionReaper",
+      "attributes": {
+        "name": "LLOTransmissionReaper",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Mailbox.Monitor",
+      "attributes": {
+        "name": "Mailbox.Monitor",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Mercury.WSRPCPool",
+      "attributes": {
+        "name": "Mercury.WSRPCPool",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Mercury.WSRPCPool.CacheSet",
+      "attributes": {
+        "name": "Mercury.WSRPCPool.CacheSet",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "NodePlatformBuildInfo",
+      "attributes": {
+        "name": "NodePlatformBuildInfo",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "NodePlatformJobInfo",
+      "attributes": {
+        "name": "NodePlatformJobInfo",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "PipelineORM",
+      "attributes": {
+        "name": "PipelineORM",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "PipelineRunner",
+      "attributes": {
+        "name": "PipelineRunner",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "PipelineRunner.BridgeCache",
+      "attributes": {
+        "name": "PipelineRunner.BridgeCache",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "RetirementReportCache",
+      "attributes": {
+        "name": "RetirementReportCache",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain.BalanceMonitor",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain.BalanceMonitor",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain.Txm",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Chain.Txm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Relayer",
+      "attributes": {
+        "name": "Solana.Bar.RelayerService.PluginRelayerClient.PluginSolana.Relayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Chain",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Chain",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Chain.Txm",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Chain.Txm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Relayer",
+      "attributes": {
+        "name": "StarkNet.Baz.RelayerService.PluginRelayerClient.PluginStarknet.Relayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain.MultiNode",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain.MultiNode",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain.StellarTxm",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarChain.StellarTxm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarRelayer",
+      "attributes": {
+        "name": "Stellar.cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472.RelayerService.PluginRelayerClient.PluginStellar.StellarRelayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Sui.67.RelayerService",
+      "attributes": {
+        "name": "Sui.67.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Sui.67.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "Sui.67.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Sui.67.RelayerService.PluginRelayerClient.PluginSui",
+      "attributes": {
+        "name": "Sui.67.RelayerService.PluginRelayerClient.PluginSui",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Sui.67.RelayerService.PluginRelayerClient.PluginSui.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "Sui.67.RelayerService.PluginRelayerClient.PluginSui.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Sui.67.RelayerService.PluginRelayerClient.PluginSui.SuiRelayer.SuiTxm",
+      "attributes": {
+        "name": "Sui.67.RelayerService.PluginRelayerClient.PluginSui.SuiRelayer.SuiTxm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Sui.67.RelayerService.PluginRelayerClient.SuiRelayer",
+      "attributes": {
+        "name": "Sui.67.RelayerService.PluginRelayerClient.SuiRelayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService",
+      "attributes": {
+        "name": "TON.-217.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.BalanceMonitor",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.BalanceMonitor",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.Chain",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.Chain",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.Relayer",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.Relayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.TONLogPoller",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.TONLogPoller",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.Txm",
+      "attributes": {
+        "name": "TON.-217.RelayerService.PluginRelayerClient.PluginTON.Txm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "TelemetryManager",
+      "attributes": {
+        "name": "TelemetryManager",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Tron.1001.RelayerService",
+      "attributes": {
+        "name": "Tron.1001.RelayerService",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Tron.1001.RelayerService.PluginRelayerClient",
+      "attributes": {
+        "name": "Tron.1001.RelayerService.PluginRelayerClient",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron",
+      "attributes": {
+        "name": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron.PluginRelayerConfigEmitter",
+      "attributes": {
+        "name": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron.PluginRelayerConfigEmitter",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron.TronRelayer",
+      "attributes": {
+        "name": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron.TronRelayer",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron.TronTxm",
+      "attributes": {
+        "name": "Tron.1001.RelayerService.PluginRelayerClient.PluginTron.TronTxm",
+        "status": "passing",
+        "output": ""
+      }
+    },
+    {
+      "type": "checks",
+      "id": "WorkflowStore",
+      "attributes": {
+        "name": "WorkflowStore",
+        "status": "passing",
+        "output": ""
+      }
+    }
+  ]
+}
+-- out-unhealthy.json --
+{
+  "data": [
+    {
+      "type": "checks",
+      "id": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker.HeadListener",
+      "attributes": {
+        "name": "EVM.1.RelayerService.PluginRelayerClient.PluginEVM.HeadTracker.HeadListener",
+        "status": "failing",
+        "output": "Listener connected = false, receiving heads = false"
+      }
+    }
+  ]
+}

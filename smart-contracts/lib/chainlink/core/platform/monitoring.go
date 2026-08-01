@@ -1,0 +1,59 @@
+package platform
+
+import (
+	"slices"
+
+	"iter"
+)
+
+// Observability keys
+const (
+	KeyCapabilityID        = "capabilityID"
+	KeyTriggerID           = "triggerID"
+	KeyTriggerDropReason   = "dropReason"
+	KeyWorkflowID          = "workflowID"
+	KeyWorkflowExecutionID = "workflowExecutionID"
+	KeyWorkflowName        = "workflowName"
+	KeyWorkflowTag         = "workflowTag"
+	KeyWorkflowVersion     = "workflowVersion"
+	KeyWorkflowOwner       = "workflowOwner"
+	KeyOrganizationID      = "orgID"
+	KeyStepID              = "stepID"
+	KeyStepRef             = "stepRef"
+	KeyDonID               = "DonID"
+	KeyDonF                = "F"
+	KeyDonN                = "N"
+	KeyDonQ                = "Q"
+	KeyP2PID               = "p2pID"
+	ValueWorkflowVersion   = "1.0.0"
+	ValueWorkflowVersionV2 = "2.0.0"
+	KeyCapabilityErrorCode = "capabilityErrorCode"
+
+	// Registry and version keys
+	WorkflowRegistryAddress       = "workflowRegistryAddress"
+	WorkflowRegistryVersion       = "workflowRegistryVersion"
+	WorkflowRegistryChainSelector = "workflowRegistryChainSelector"
+	EngineVersion                 = "engineVersion"
+	CapabilitiesRegistryVersion   = "capabilitiesRegistryVersion"
+	DonVersion                    = "donVersion"
+
+	KeySDK = "sdk"
+
+	// WorkflowSource identifies where the workflow was deployed from.
+	// Format varies by source type:
+	//   - Onchain contract: "contract:{chain_selector}:{contract_address}"
+	//   - GRPC source:      "grpc:{source_name}:v1"
+	//   - File source:      "file:{source_name}:v1"
+	KeyWorkflowSource = "workflowSource"
+)
+
+func LabelKeysSorted() iter.Seq[string] {
+	return slices.Values([]string{
+		KeyStepRef,
+		KeyStepID,
+		KeyTriggerID,
+		KeyCapabilityID,
+		KeyWorkflowExecutionID,
+		KeyWorkflowID,
+	})
+}

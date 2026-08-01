@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function Borrow() {
-  return <section>Borrow</section>;
+  return <div>Borrow</div>;
 }

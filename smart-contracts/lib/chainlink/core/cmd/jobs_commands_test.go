@@ -1,0 +1,324 @@
+package cmd_test
+
+import (
+	"bytes"
+	_ "embed"
+	"flag"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/urfave/cli"
+
+	"github.com/smartcontractkit/freeport"
+
+	commonconfig "github.com/smartcontractkit/chainlink-common/pkg/config"
+	"github.com/smartcontractkit/chainlink-common/pkg/sqlutil"
+	"github.com/smartcontractkit/chainlink/v2/core/cmd"
+	"github.com/smartcontractkit/chainlink/v2/core/internal/cltest"
+	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils"
+	"github.com/smartcontractkit/chainlink/v2/core/services/chainlink"
+	"github.com/smartcontractkit/chainlink/v2/core/services/job"
+	"github.com/smartcontractkit/chainlink/v2/core/web/presenters"
+)
+
+func TestJobPresenter_RenderTable(t *testing.T) {
+	t.Parallel()
+
+	var (
+		id              = "1"
+		name            = "Job 1"
+		jobSpecType     = "cron"
+		schemaVersion   = uint32(1)
+		maxTaskDuration = sqlutil.Interval(1 * time.Second)
+
+		createdAt = time.Now()
+		updatedAt = time.Now().Add(time.Second)
+		buffer    = bytes.NewBufferString("")
+		r         = cmd.RendererTable{Writer: buffer}
+	)
+
+	p := cmd.JobPresenter{
+		JobResource: presenters.JobResource{
+			JAID:              presenters.NewJAID(id),
+			Name:              name,
+			Type:              presenters.JobSpecType(jobSpecType),
+			SchemaVersion:     schemaVersion,
+			MaxTaskDuration:   maxTaskDuration,
+			DirectRequestSpec: nil,
+			CronSpec: &presenters.CronSpec{
+				CreatedAt: createdAt,
+				UpdatedAt: updatedAt,
+			},
+			OffChainReportingSpec: nil,
+			PipelineSpec: presenters.PipelineSpec{
+				ID:           1,
+				DotDAGSource: "ds1 [type=http method=GET url=\"example.com\" allowunrestrictednetworkaccess=\"true\"];\n    ds1_parse    [type=jsonparse path=\"USD\"];\n    ds1_multiply [type=multiply times=100];\n    ds1 -\u003e ds1_parse -\u003e ds1_multiply;\n",
+			},
+		},
+	}
+
+	// Render a single resource
+	require.NoError(t, p.RenderTable(r))
+
+	output := buffer.String()
+	assert.Contains(t, output, id)
+	assert.Contains(t, output, name)
+	assert.Contains(t, output, jobSpecType)
+	assert.Contains(t, output, "ds1 http")
+	assert.Contains(t, output, "ds1_parse jsonparse")
+	assert.Contains(t, output, "ds1_multiply multiply")
+	assert.Contains(t, output, createdAt.Format(time.RFC3339))
+
+	// Render many resources
+	buffer.Reset()
+	ps := cmd.JobPresenters{p}
+	require.NoError(t, ps.RenderTable(r))
+
+	output = buffer.String()
+	assert.Contains(t, output, id)
+	assert.Contains(t, output, name)
+	assert.Contains(t, output, jobSpecType)
+	assert.Contains(t, output, "ds1 http")
+	assert.Contains(t, output, "ds1_parse jsonparse")
+	assert.Contains(t, output, "ds1_multiply multiply")
+	assert.Contains(t, output, createdAt.Format(time.RFC3339))
+}
+
+func TestJobRenderer_GetTasks(t *testing.T) {
+	t.Parallel()
+
+	r := &cmd.JobPresenter{}
+
+	t.Run("gets the tasks from the DAG in reverse order", func(t *testing.T) {
+		r.PipelineSpec = presenters.PipelineSpec{
+			DotDAGSource: "ds1 [type=http method=GET url=\"example.com\" allowunrestrictednetworkaccess=\"true\"];\n    ds1_parse    [type=jsonparse path=\"USD\"];\n    ds1_multiply [type=multiply times=100];\n    ds1 -\u003e ds1_parse -\u003e ds1_multiply;\n",
+		}
+
+		tasks, err := r.GetTasks()
+
+		assert.NoError(t, err)
+		assert.Equal(t, []string{
+			"ds1 http",
+			"ds1_parse jsonparse",
+			"ds1_multiply multiply",
+		}, tasks)
+	})
+
+	t.Run("parse error", func(t *testing.T) {
+		r.PipelineSpec = presenters.PipelineSpec{
+			DotDAGSource: "invalid dot",
+		}
+
+		tasks, err := r.GetTasks()
+
+		assert.Error(t, err)
+		assert.Nil(t, tasks)
+	})
+}
+
+func TestJob_FriendlyTasks(t *testing.T) {
+	t.Parallel()
+
+	r := &cmd.JobPresenter{}
+
+	t.Run("gets the tasks in a printable format", func(t *testing.T) {
+		r.PipelineSpec = presenters.PipelineSpec{
+			DotDAGSource: "    ds1          [type=http method=GET url=\"example.com\" allowunrestrictednetworkaccess=\"true\"];\n    ds1_parse    [type=jsonparse path=\"USD\"];\n    ds1_multiply [type=multiply times=100];\n    ds1 -\u003e ds1_parse -\u003e ds1_multiply;\n",
+		}
+
+		assert.Equal(t, []string{
+			"ds1 http",
+			"ds1_parse jsonparse",
+			"ds1_multiply multiply",
+		}, r.FriendlyTasks())
+	})
+
+	t.Run("parse error", func(t *testing.T) {
+		r.PipelineSpec = presenters.PipelineSpec{
+			DotDAGSource: "invalid dot",
+		}
+
+		assert.Equal(t, []string{"error parsing DAG"}, r.FriendlyTasks())
+	})
+}
+
+func TestJob_FriendlyCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	testCases := []struct {
+		name   string
+		job    *cmd.JobPresenter
+		result string
+	}{
+		{
+			"gets the cron spec created at timestamp",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: presenters.CronJobSpec,
+					CronSpec: &presenters.CronSpec{
+						CreatedAt: now,
+					},
+				},
+			},
+			now.Format(time.RFC3339),
+		},
+		{
+			"gets the vrf spec created at timestamp",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: presenters.VRFJobSpec,
+					VRFSpec: &presenters.VRFSpec{
+						CreatedAt: now,
+					},
+				},
+			},
+			now.Format(time.RFC3339),
+		},
+		{
+			"gets the off chain reporting spec created at timestamp",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: presenters.OffChainReportingJobSpec,
+					OffChainReportingSpec: &presenters.OffChainReportingSpec{
+						CreatedAt: now,
+					},
+				},
+			},
+			now.Format(time.RFC3339),
+		},
+		{
+			"gets the blockhash store spec created at timestamp",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: presenters.BlockhashStoreJobSpec,
+					BlockhashStoreSpec: &presenters.BlockhashStoreSpec{
+						CreatedAt: now,
+					},
+				},
+			},
+			now.Format(time.RFC3339),
+		},
+		{
+			"gets the blockheaderfeeder spec created at timestamp",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: presenters.BlockHeaderFeederJobSpec,
+					BlockHeaderFeederSpec: &presenters.BlockHeaderFeederSpec{
+						CreatedAt: now,
+					},
+				},
+			},
+			now.Format(time.RFC3339),
+		},
+		{
+			"invalid type",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: "invalid type",
+				},
+			},
+			"unknown",
+		},
+		{
+			"no spec exists",
+			&cmd.JobPresenter{
+				JobResource: presenters.JobResource{
+					Type: presenters.CronJobSpec,
+				},
+			},
+			"N/A",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.result, tc.job.FriendlyCreatedAt())
+		})
+	}
+}
+
+func TestJob_ToRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	job := &cmd.JobPresenter{
+		JAID: cmd.NewJAID("1"),
+		JobResource: presenters.JobResource{
+			Name: "Test Job",
+			Type: presenters.CronJobSpec,
+			CronSpec: &presenters.CronSpec{
+				CreatedAt: now,
+			},
+			PipelineSpec: presenters.PipelineSpec{
+				DotDAGSource: "    ds1          [type=http method=GET url=\"example.com\" allowunrestrictednetworkaccess=\"true\"];\n    ds1_parse    [type=jsonparse path=\"USD\"];\n    ds1_multiply [type=multiply times=100];\n    ds1 -\u003e ds1_parse -\u003e ds1_multiply;\n",
+			},
+		},
+	}
+
+	assert.Equal(t, [][]string{
+		{"1", "Test Job", "cron", "ds1 http", now.Format(time.RFC3339)},
+		{"1", "Test Job", "cron", "ds1_parse jsonparse", now.Format(time.RFC3339)},
+		{"1", "Test Job", "cron", "ds1_multiply multiply", now.Format(time.RFC3339)},
+	}, job.ToRows())
+
+	// Produce a single row even if there is not DAG
+	job.PipelineSpec.DotDAGSource = ""
+	assert.Equal(t, [][]string{
+		{"1", "Test Job", "cron", "", now.Format(time.RFC3339)},
+	}, job.ToRows())
+}
+
+//go:embed ocr-bootstrap-spec.yml
+var ocrBootstrapSpec string
+
+func TestShell_CreateJobV2(t *testing.T) {
+	t.Parallel()
+
+	app := startNewApplicationV2(t, func(c *chainlink.Config, s *chainlink.Secrets) {
+		c.Database.Listener.FallbackPollInterval = commonconfig.MustNewDuration(100 * time.Millisecond)
+		c.OCR.Enabled = new(true)
+		c.P2P.V2.Enabled = new(true)
+		c.P2P.V2.ListenAddresses = &[]string{fmt.Sprintf("127.0.0.1:%d", freeport.GetOne(t))}
+		c.P2P.PeerID = &cltest.DefaultP2PPeerID
+		c.EVM[0].Enabled = new(true)
+		c.EVM[0].NonceAutoSync = new(false)
+		c.EVM[0].BalanceMonitor.Enabled = new(false)
+		c.EVM[0].GasEstimator.Mode = new("FixedPrice")
+	}, func(opts *startOptions) {
+		opts.FlagsAndDeps = append(opts.FlagsAndDeps, cltest.DefaultP2PKey)
+	})
+	client, r := app.NewShellAndRenderer()
+
+	requireJobsCount(t, app.JobORM(), 0)
+
+	fs := flag.NewFlagSet("", flag.ExitOnError)
+	flagSetApplyFromAction(client.CreateJob, fs, "")
+
+	nameAndExternalJobID := uuid.New()
+	spec := fmt.Sprintf(ocrBootstrapSpec, nameAndExternalJobID, nameAndExternalJobID, testutils.FixtureChainID.String())
+	require.NoError(t, fs.Parse([]string{spec}))
+
+	err := client.CreateJob(cli.NewContext(nil, fs, nil))
+	require.NoError(t, err)
+
+	requireJobsCount(t, app.JobORM(), 1)
+
+	output := *r.Renders[0].(*cmd.JobPresenter)
+	assert.Equal(t, presenters.JobSpecType("offchainreporting"), output.Type)
+	assert.Equal(t, uint32(1), output.SchemaVersion)
+	assert.Equal(t, "0x27548a32b9aD5D64c5945EaE9Da5337bc3169D15", output.OffChainReportingSpec.ContractAddress.String())
+}
+
+func requireJobsCount(t *testing.T, orm job.ORM, expected int) {
+	ctx := testutils.Context(t)
+	jobs, _, err := orm.FindJobs(ctx, 0, 1000)
+	require.NoError(t, err)
+	require.Len(t, jobs, expected)
+}

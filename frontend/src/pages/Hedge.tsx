@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function Hedge() {
-  return <section>Hedge</section>;
+  return <div>Hedge</div>;
 }

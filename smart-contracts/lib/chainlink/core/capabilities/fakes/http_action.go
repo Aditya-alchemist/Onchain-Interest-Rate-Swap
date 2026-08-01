@@ -1,0 +1,245 @@
+package fakes
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	commonCap "github.com/smartcontractkit/chainlink-common/pkg/capabilities"
+	caperrors "github.com/smartcontractkit/chainlink-common/pkg/capabilities/errors"
+	customhttp "github.com/smartcontractkit/chainlink-common/pkg/capabilities/v2/actions/http"
+	httpserver "github.com/smartcontractkit/chainlink-common/pkg/capabilities/v2/actions/http/server"
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
+	"github.com/smartcontractkit/chainlink-common/pkg/services"
+	"github.com/smartcontractkit/chainlink-common/pkg/types/core"
+)
+
+var (
+	_ httpserver.ClientCapability    = (*DirectHTTPAction)(nil)
+	_ services.Service               = (*DirectHTTPAction)(nil)
+	_ commonCap.ExecutableCapability = (*DirectHTTPAction)(nil)
+)
+
+const (
+	HTTPActionID          = "http-actions@0.1.0"
+	HTTPActionServiceName = "HttpActionService"
+)
+
+var directHTTPActionInfo = commonCap.MustNewCapabilityInfo(
+	HTTPActionID,
+	commonCap.CapabilityTypeAction,
+	"An action that makes a direct HTTP request",
+)
+
+type DirectHTTPAction struct {
+	commonCap.CapabilityInfo
+	services.Service
+	eng *services.Engine
+
+	lggr logger.Logger
+}
+
+func NewDirectHTTPAction(lggr logger.Logger) *DirectHTTPAction {
+	fc := &DirectHTTPAction{
+		lggr: lggr,
+	}
+
+	fc.Service, fc.eng = services.Config{
+		Name: "directHttpAction",
+	}.NewServiceEngine(lggr)
+	return fc
+}
+
+func (fh *DirectHTTPAction) SendRequest(ctx context.Context, metadata commonCap.RequestMetadata, input *customhttp.Request) (*commonCap.ResponseAndMetadata[*customhttp.Response], caperrors.Error) {
+	fh.eng.Infow("HTTP Action SendRequest Started", "input", input)
+
+	// Create HTTP client with timeout
+	timeout := time.Duration(30) * time.Second // default timeout
+	if input.GetTimeout() != nil {
+		timeout = input.GetTimeout().AsDuration()
+	}
+
+	client, err := newHTTPClient(input, timeout)
+	if err != nil {
+		fh.eng.Errorw("Failed to build HTTP client", "error", err)
+		httpResponse := &customhttp.Response{
+			StatusCode: 0,
+		}
+		responseAndMetadata := commonCap.ResponseAndMetadata[*customhttp.Response]{
+			Response:         httpResponse,
+			ResponseMetadata: commonCap.ResponseMetadata{},
+		}
+		return &responseAndMetadata, caperrors.NewPrivateSystemError(err, caperrors.Unknown)
+	}
+
+	// Return an error if no HTTP method is provided
+	method := strings.TrimSpace(input.GetMethod())
+	if method == "" {
+		return nil, caperrors.NewPrivateUserError(errors.New("http method cannot be empty"), caperrors.InvalidArgument)
+	}
+	method = strings.ToUpper(method)
+
+	// Create request body
+	var body io.Reader
+	if len(input.GetBody()) > 0 {
+		body = bytes.NewReader(input.GetBody())
+	}
+
+	// Create the HTTP request
+	req, err := http.NewRequestWithContext(ctx, method, input.GetUrl(), body)
+	if err != nil {
+		fh.eng.Errorw("Failed to create HTTP request", "error", err)
+		httpResponse := &customhttp.Response{
+			StatusCode: 0,
+		}
+		responseAndMetadata := commonCap.ResponseAndMetadata[*customhttp.Response]{
+			Response:         httpResponse,
+			ResponseMetadata: commonCap.ResponseMetadata{},
+		}
+		return &responseAndMetadata, caperrors.NewPrivateSystemError(err, caperrors.Unknown)
+	}
+
+	// Add headers: prefer MultiHeaders, fall back to deprecated Headers
+	if len(input.GetMultiHeaders()) > 0 {
+		for k, v := range input.GetMultiHeaders() {
+			for _, val := range v.GetValues() {
+				req.Header.Add(k, val)
+			}
+		}
+	} else {
+		for k, v := range input.GetHeaders() { //nolint: staticcheck // deprecated
+			req.Header.Set(k, v)
+		}
+	}
+
+	// Make the HTTP request
+	resp, err := client.Do(req)
+	if err != nil {
+		fh.eng.Errorw("Failed to execute HTTP request", "error", err)
+		httpResponse := &customhttp.Response{
+			StatusCode: 0,
+		}
+		responseAndMetadata := commonCap.ResponseAndMetadata[*customhttp.Response]{
+			Response:         httpResponse,
+			ResponseMetadata: commonCap.ResponseMetadata{},
+		}
+		if errors.Is(err, errRedirectsDisabled) {
+			return &responseAndMetadata, caperrors.NewPublicUserError(err, caperrors.InvalidArgument)
+		}
+		return &responseAndMetadata, caperrors.NewPrivateSystemError(err, caperrors.Unknown)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fh.eng.Errorw("Failed to read response body", "error", err)
+		httpResponse := &customhttp.Response{
+			StatusCode: uint32(resp.StatusCode), //nolint:gosec // status code is always in valid range
+		}
+		responseAndMetadata := commonCap.ResponseAndMetadata[*customhttp.Response]{
+			Response:         httpResponse,
+			ResponseMetadata: commonCap.ResponseMetadata{},
+		}
+		return &responseAndMetadata, caperrors.NewPrivateSystemError(err, caperrors.Unknown)
+	}
+
+	// Convert headers: Headers (comma-joined for backwards compat) and MultiHeaders (per capability)
+	headers := make(map[string]string, len(resp.Header))
+	multiHeaders := make(map[string]*customhttp.HeaderValues, len(resp.Header))
+	for k, v := range resp.Header {
+		if len(v) == 0 {
+			continue
+		}
+		headers[k] = strings.Join(v, ", ")
+		multiHeaders[k] = &customhttp.HeaderValues{Values: slices.Clone(v)}
+	}
+
+	// Create response
+	response := &customhttp.Response{
+		StatusCode:   uint32(resp.StatusCode), //nolint:gosec // status code is always in valid range
+		Headers:      headers,
+		MultiHeaders: multiHeaders,
+		Body:         respBody,
+	}
+	responseAndMetadata := commonCap.ResponseAndMetadata[*customhttp.Response]{
+		Response:         response,
+		ResponseMetadata: commonCap.ResponseMetadata{},
+	}
+	fh.eng.Infow("HTTP Action Finished", "Status", resp.StatusCode, "URL", input.GetUrl())
+	return &responseAndMetadata, nil
+}
+
+// errRedirectsDisabled mirrors the CRE DON's HTTP action capability, which
+// does not permit following redirects (see capabilities/http_action/common/proxy.go).
+var errRedirectsDisabled = errors.New("redirects are not allowed")
+
+func disableRedirects(*http.Request, []*http.Request) error {
+	return errRedirectsDisabled
+}
+
+// newHTTPClient builds the HTTP client used to make the outbound request. When
+// the request carries mTLS auth, the client is configured to present the
+// supplied certificate and private key as a client certificate.
+func newHTTPClient(input *customhttp.Request, timeout time.Duration) (*http.Client, error) {
+	client := &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: disableRedirects,
+	}
+
+	mtls := input.GetMtls()
+	if mtls == nil {
+		return client, nil
+	}
+
+	cert, err := tls.X509KeyPair(mtls.GetCertificate(), mtls.GetPrivateKey())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse mtls auth into key pair: %w", err)
+	}
+
+	client.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+
+	return client, nil
+}
+
+func (fh *DirectHTTPAction) Description() string {
+	return directHTTPActionInfo.Description
+}
+
+func (fh *DirectHTTPAction) Initialise(ctx context.Context, dependencies core.StandardCapabilitiesDependencies) error {
+	// TODO: do validation of config here
+
+	err := fh.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (fh *DirectHTTPAction) Execute(ctx context.Context, request commonCap.CapabilityRequest) (commonCap.CapabilityResponse, error) {
+	fh.eng.Infow("Direct Http Action Execute Started", "request", request)
+	return commonCap.CapabilityResponse{}, nil
+}
+
+func (fh *DirectHTTPAction) RegisterToWorkflow(ctx context.Context, request commonCap.RegisterToWorkflowRequest) error {
+	fh.eng.Infow("Registered to Direct Http Action", "workflowID", request.Metadata.WorkflowID)
+	return nil
+}
+
+func (fh *DirectHTTPAction) UnregisterFromWorkflow(ctx context.Context, request commonCap.UnregisterFromWorkflowRequest) error {
+	fh.eng.Infow("Unregistered from Direct Http Action", "workflowID", request.Metadata.WorkflowID)
+	return nil
+}

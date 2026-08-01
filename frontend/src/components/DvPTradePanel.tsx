@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function DvPTradePanel() {
-  return <div>DvP Trade Panel</div>;
+  return <div>DvPTradePanel</div>;
 }

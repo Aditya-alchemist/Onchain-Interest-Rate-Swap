@@ -1,0 +1,1051 @@
+package cre
+
+import (
+	"context"
+	"fmt"
+	"math/big"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/avast/retry-go/v5"
+	"github.com/cosmos/gogoproto/proto"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/pkg/errors"
+	chainselectors "github.com/smartcontractkit/chain-selectors"
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+
+	cre_offchain "github.com/smartcontractkit/chainlink/deployment/cre/pkg/offchain"
+	offchain_ops "github.com/smartcontractkit/chainlink/deployment/cre/pkg/offchain/changeset/operations"
+	keystone_changeset "github.com/smartcontractkit/chainlink/deployment/keystone/changeset"
+	ks_contracts_op "github.com/smartcontractkit/chainlink/deployment/keystone/changeset/operations/contracts"
+	"github.com/smartcontractkit/chainlink/system-tests/lib/cre/don/secrets"
+	"github.com/smartcontractkit/chainlink/system-tests/lib/cre/environment/blockchains"
+	"github.com/smartcontractkit/chainlink/system-tests/lib/cre/environment/blockchains/solana"
+	stellarbc "github.com/smartcontractkit/chainlink/system-tests/lib/cre/environment/blockchains/stellar"
+	"github.com/smartcontractkit/chainlink/system-tests/lib/crypto"
+
+	vault_helpers "github.com/smartcontractkit/chainlink-common/pkg/capabilities/actions/vault"
+	capabilitiespb "github.com/smartcontractkit/chainlink-common/pkg/capabilities/pb"
+	cldf "github.com/smartcontractkit/chainlink-deployments-framework/deployment"
+	"github.com/smartcontractkit/chainlink-deployments-framework/offchain/jd"
+	"github.com/smartcontractkit/chainlink-deployments-framework/operations"
+	capabilities_registry_v2 "github.com/smartcontractkit/chainlink-evm/gethwrappers/workflow/generated/capabilities_registry_wrapper_v2"
+	nodev1 "github.com/smartcontractkit/chainlink-protos/job-distributor/v1/node"
+	"github.com/smartcontractkit/chainlink-testing-framework/framework"
+	"github.com/smartcontractkit/chainlink-testing-framework/framework/clclient"
+	"github.com/smartcontractkit/chainlink-testing-framework/framework/components/blockchain"
+	"github.com/smartcontractkit/chainlink-testing-framework/framework/components/clnode"
+	"github.com/smartcontractkit/chainlink-testing-framework/seth"
+	"github.com/smartcontractkit/chainlink/deployment/environment/web/sdk/client"
+)
+
+const (
+	LabelNodeTypeKey            = "type"
+	LabelNodeTypeValueBootstrap = "bootstrap"
+	LabelNodeTypeValuePlugin    = "plugin"
+
+	LabelNodeP2PIDKey = "p2p_id"
+)
+
+type Role string
+
+const (
+	RoleBootstrap Role = "bootstrap"
+	RoleWorker    Role = "plugin" // label value used by chainlink-deployments-framework to denote worker nodes
+	RoleGateway   Role = "gateway"
+)
+
+func NewRole(role string) (Role, error) {
+	switch strings.ToLower(role) {
+	case "bootstrap":
+		return RoleBootstrap, nil
+	case "worker", "plugin":
+		return RoleWorker, nil
+	case "gateway":
+		return RoleGateway, nil
+	default:
+		return "", fmt.Errorf("unknown role: %s", role)
+	}
+}
+
+type Roles []Role
+
+func (r Roles) Contains(role Role) bool {
+	return slices.Contains(r, role)
+}
+
+func (r Roles) Strings() []string {
+	result := make([]string, len(r))
+	for i, role := range r {
+		result[i] = string(role)
+	}
+
+	return result
+}
+
+func MustNewRoles(roles []string) Roles {
+	r, err := NewRoles(roles)
+	if err != nil {
+		panic(err)
+	}
+
+	return r
+}
+
+func NewRoles(roles []string) (Roles, error) {
+	result := make(Roles, len(roles))
+	for i, role := range roles {
+		r, err := NewRole(role)
+		if err != nil {
+			return nil, err
+		}
+		result[i] = r
+	}
+
+	return result, nil
+}
+
+type Don struct {
+	Name       string `toml:"name" json:"name"`
+	ID         uint64 `toml:"id" json:"id"`
+	F          uint8  `toml:"f" json:"f"` // max faulty nodes
+	ShardIndex uint   `toml:"shard_index" json:"shard_index"`
+	DonFamily  string `toml:"don_family" json:"don_family"` // propagated from DonMetadata for feature PostEnvStartup scoping
+
+	Nodes []*Node `toml:"nodes" json:"nodes"`
+
+	Flags []CapabilityFlag `toml:"flags" json:"flags"` // capabilities and roles
+
+	capabilityConfigs    map[CapabilityFlag]CapabilityConfig
+	chainCapabilityIndex map[CapabilityFlag][]uint64
+}
+
+func (d *Don) Metadata() *DonMetadata {
+	dm := &DonMetadata{
+		Name:              d.Name,
+		ID:                d.ID,
+		Flags:             d.Flags,
+		ShardIndex:        d.ShardIndex,
+		DonFamily:         d.DonFamily,
+		NodesMetadata:     make([]*NodeMetadata, len(d.Nodes)),
+		CapabilityConfigs: d.capabilityConfigs,
+		// caution: missing NodeSet field, since we don't have it here
+	}
+
+	for i, node := range d.Nodes {
+		dm.NodesMetadata[i] = node.Metadata()
+	}
+
+	return dm
+}
+
+// copied from flags.go to avoid import cycle
+func (d *Don) HasFlag(flag CapabilityFlag) bool {
+	if slices.Contains(d.Flags, flag) {
+		return true
+	}
+
+	for _, value := range d.Flags {
+		if strings.HasPrefix(value, flag+"-") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (d *Don) Gateway() (*Node, bool) {
+	for _, node := range d.Nodes {
+		if node.Roles.Contains(RoleGateway) {
+			return node, true
+		}
+	}
+
+	return nil, false
+}
+
+// Currently only one bootstrap node is supported.
+func (d *Don) Bootstrap() (*Node, bool) {
+	for _, node := range d.Nodes {
+		if node.Roles.Contains(RoleBootstrap) {
+			return node, true
+		}
+	}
+
+	return nil, false
+}
+
+func (d *Don) WorkersCount() int {
+	workers, wErr := d.Workers()
+	if wErr != nil {
+		return 0
+	}
+
+	return len(workers)
+}
+
+func (d *Don) Workers() ([]*Node, error) {
+	workers := make([]*Node, 0)
+	for _, node := range d.Nodes {
+		if node.Roles.Contains(RoleWorker) {
+			workers = append(workers, node)
+		}
+	}
+
+	if len(workers) == 0 {
+		return nil, errors.New("don does not contain any worker nodes")
+	}
+
+	return workers, nil
+}
+
+func (d *Don) JDNodeIDs() []string {
+	nodeIDs := make([]string, len(d.Nodes))
+	for i, n := range d.Nodes {
+		nodeIDs[i] = n.JobDistributorDetails.NodeID
+	}
+	return nodeIDs
+}
+
+func (d *Don) GetCapabilityConfig(flag CapabilityFlag) (CapabilityConfig, bool) {
+	capConfig, ok := d.capabilityConfigs[flag]
+	return capConfig, ok
+}
+
+func (d *Don) GetEnabledChainIDsForCapability(flag CapabilityFlag) ([]uint64, error) {
+	ids := d.chainCapabilityIndex[flag]
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	return slices.Clone(ids), nil
+}
+
+func (d *Don) GetCapabilityFlags() []string {
+	return d.Flags
+}
+
+func (d *Don) GetName() string {
+	return d.Name
+}
+
+func NewDON(ctx context.Context, donMetadata *DonMetadata, ctfNodes []*clnode.Output) (*Don, error) {
+	don := &Don{
+		Nodes:                make([]*Node, len(donMetadata.NodesMetadata)),
+		Name:                 donMetadata.Name,
+		ID:                   donMetadata.ID,
+		Flags:                donMetadata.Flags,
+		ShardIndex:           donMetadata.ShardIndex,
+		DonFamily:            donMetadata.DonFamily,
+		capabilityConfigs:    donMetadata.ns.CapabilityConfigs,
+		chainCapabilityIndex: donMetadata.ns.chainCapabilityIndex,
+	}
+
+	errgroup := errgroup.Group{}
+	for idx, nodeMetadata := range donMetadata.NodesMetadata {
+		errgroup.Go(func() error {
+			node, err := NewNode(ctx, fmt.Sprintf("%s-node%d", donMetadata.Name, idx), nodeMetadata, ctfNodes[idx])
+			if err != nil {
+				return fmt.Errorf("failed to create node %d: %w", idx, err)
+			}
+			node.DON = don
+			don.Nodes[idx] = node
+
+			return nil
+		})
+	}
+
+	if err := errgroup.Wait(); err != nil {
+		return nil, fmt.Errorf("failed to create new nodes in DON: %w", err)
+	}
+
+	forwarderF := (don.WorkersCount() - 1) / 3
+	if forwarderF == 0 {
+		if don.HasFlag(ConsensusCapability) {
+			return nil, fmt.Errorf("incorrect number of worker nodes: %d. Resulting F must conform to formula: mod((N-1)/3) > 0", don.WorkersCount())
+		}
+		// for other capabilities, we can use 1 as F
+		forwarderF = 1
+	}
+
+	don.F = uint8(forwarderF)
+
+	return don, nil
+}
+
+func registerWithJD(ctx context.Context, d *Don, supportedChains []blockchains.Blockchain, cldfEnv *cldf.Environment) error {
+	jd, ok := cldfEnv.Offchain.(*jd.JobDistributor)
+	if !ok {
+		return fmt.Errorf("offchain environment is not a *.jd.JobDistributor, but %T", cldfEnv.Offchain)
+	}
+
+	errgroup := errgroup.Group{}
+	for idx, node := range d.Nodes {
+		errgroup.Go(func() error {
+			// Set up Job distributor in node and register node with the job distributor
+			setupErr := node.setUpAndLinkJobDistributor(ctx, cldfEnv)
+			if setupErr != nil {
+				return fmt.Errorf("failed to set up job distributor in node %s: %w", node.Name, setupErr)
+			}
+
+			for _, role := range node.Roles {
+				switch role {
+				case RoleWorker, RoleBootstrap:
+					if err := createJDChainConfigs(ctx, node, supportedChains, jd); err != nil {
+						return fmt.Errorf("failed to create supported chains in node %s: %w", node.Name, err)
+					}
+				case RoleGateway:
+					// no chains configuration needed for gateway nodes
+				default:
+					return fmt.Errorf("unknown node role: %s", role)
+				}
+			}
+
+			d.Nodes[idx] = node
+
+			return nil
+		})
+	}
+
+	if err := errgroup.Wait(); err != nil {
+		return fmt.Errorf("failed to create new nodes in DON: %w", err)
+	}
+
+	return nil
+}
+
+type Node struct {
+	Name                  string                 `toml:"name" json:"name"`
+	Host                  string                 `toml:"host" json:"host"`
+	Index                 int                    `toml:"index" json:"index"`
+	UUID                  string                 `toml:"uuid" json:"uuid"`
+	Keys                  *secrets.NodeKeys      `toml:"-" json:"-"`
+	Addresses             Addresses              `toml:"addresses" json:"addresses"`
+	JobDistributorDetails *JobDistributorDetails `toml:"job_distributor_details" json:"job_distributor_details"`
+	Roles                 Roles                  `toml:"roles" json:"roles"`
+
+	Clients NodeClients `toml:"-" json:"-"`
+	DON     *Don        `toml:"-" json:"-"`
+}
+
+func (n *Node) Metadata() *NodeMetadata {
+	node := &NodeMetadata{
+		Index: n.Index,
+		Keys:  n.Keys,
+		Roles: n.Roles.Strings(),
+		Host:  n.Host,
+		UUID:  n.UUID,
+	}
+
+	if node.Keys == nil {
+		node.Keys = &secrets.NodeKeys{}
+	}
+
+	return node
+}
+
+func (n *Node) GetHost() string {
+	return n.Host
+}
+
+func (n *Node) PeerID() string {
+	return n.Keys.PeerID()
+}
+
+func (n *Node) HasRole(role Role) bool {
+	return slices.Contains(n.Roles, role)
+}
+
+func NewNode(ctx context.Context, name string, nodeMetadata *NodeMetadata, ctfNode *clnode.Output) (*Node, error) {
+	gqlClient, gqErr := client.NewWithContext(ctx, ctfNode.Node.ExternalURL, client.Credentials{
+		Email:    ctfNode.Node.APIAuthUser,
+		Password: ctfNode.Node.APIAuthPassword,
+	})
+	if gqErr != nil {
+		return nil, fmt.Errorf("failed to create node graphql client: %w", gqErr)
+	}
+
+	chainlinkClient, cErr := clclient.NewChainlinkClient(&clclient.Config{
+		URL:         ctfNode.Node.ExternalURL,
+		Email:       ctfNode.Node.APIAuthUser,
+		Password:    ctfNode.Node.APIAuthPassword,
+		InternalIP:  ctfNode.Node.InternalIP,
+		HTTPTimeout: new(10 * time.Second),
+	})
+	if cErr != nil {
+		return nil, fmt.Errorf("failed to create node rest client: %w", cErr)
+	}
+
+	node := &Node{
+		Clients: NodeClients{
+			GQLClient:  gqlClient,
+			RestClient: chainlinkClient,
+		},
+		Name:  name,
+		Index: nodeMetadata.Index,
+		Keys:  nodeMetadata.Keys,
+		Roles: MustNewRoles(nodeMetadata.Roles),
+		Host:  nodeMetadata.Host,
+		UUID:  nodeMetadata.UUID,
+	}
+
+	for i, role := range nodeMetadata.Roles {
+		r, err := NewRole(role)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse role %s: %w", role, err)
+		}
+		node.Roles[i] = r
+	}
+
+	for _, role := range node.Roles {
+		switch role {
+		case RoleWorker:
+			// multi address is not applicable for non-bootstrap nodes; explicitly set it to empty string to denote that
+			node.Addresses.MultiAddress = ""
+
+			// set admin address for non-bootstrap nodes (capability registry requires non-null admin address; use arbitrary default value if node is not configured)
+			node.Addresses.AdminAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+		case RoleBootstrap:
+			// create multi address for OCR2; applicable only for bootstrap nodes
+			p2pURL, err := url.Parse(ctfNode.Node.InternalP2PUrl)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse p2p url: %w", err)
+			}
+			node.Addresses.MultiAddress = fmt.Sprintf("%s:%s", ctfNode.Node.InternalIP, p2pURL.Port())
+
+			// no need to set admin address for bootstrap nodes, as there will be no payment
+			node.Addresses.AdminAddress = ""
+		case RoleGateway:
+			// no specific data to set for gateway nodes yet
+		default:
+			return nil, fmt.Errorf("unknown node role: %s", role)
+		}
+	}
+
+	return node, nil
+}
+
+type JobDistributorDetails struct {
+	NodeID string `toml:"node_id" json:"node_id"` // nodeID returned by JD after node is registered with it
+	JDID   string `toml:"jd_id" json:"jd_id"`     // JD ID returned by node after Job distributor is created in the node
+}
+
+type Addresses struct {
+	AdminAddress string `toml:"admin_address" json:"admin_address"` // address used to pay for transactions, applicable only for worker nodes
+	MultiAddress string `toml:"multi_address" json:"multi_address"` // multi address used by OCR2, applicable only for bootstrap nodes
+}
+
+type NodeClients struct {
+	GQLClient  client.Client             // graphql client to interact with the node
+	RestClient *clclient.ChainlinkClient // rest client to interact with the node
+}
+
+type JDChainConfigInput struct {
+	ChainID   string
+	ChainType string
+}
+
+type nodeChainConfigLister interface {
+	ListNodeChainConfigs(context.Context, *nodev1.ListNodeChainConfigsRequest, ...grpc.CallOption) (*nodev1.ListNodeChainConfigsResponse, error)
+}
+
+var (
+	jdChainConfigPollTimeout = 10 * time.Second
+	jdChainConfigRPCTimeout  = 3 * time.Second
+)
+
+func createJDChainConfigs(ctx context.Context, n *Node, supportedChains []blockchains.Blockchain, jd nodeChainConfigLister) error {
+	ocr2BundleIDsByType := make(map[string]string)
+	// Dedupe by (chain ID, chain type) so we never create the same config twice.
+	seen := make(map[string]struct{})
+	for _, chain := range supportedChains {
+		var account string
+		var accountAddrPubKey string
+		chainIDStr := strconv.FormatUint(chain.ChainID(), 10)
+
+		switch strings.ToLower(chain.ChainFamily()) {
+		case chainselectors.FamilyEVM, chainselectors.FamilyTron:
+			evmKey, ok := n.Keys.EVM[chain.ChainID()]
+			if ok {
+				account = evmKey.PublicAddress.Hex()
+			} else {
+				var fetchErr error
+				accountAddr, fetchErr := n.Clients.GQLClient.FetchAccountAddress(ctx, chainIDStr)
+				if fetchErr != nil {
+					return fmt.Errorf("failed to fetch account address for node %s: %w", n.Name, fetchErr)
+				}
+				if accountAddr == nil {
+					return fmt.Errorf("no account address found for node %s", n.Name)
+				}
+				account = *accountAddr
+			}
+		case chainselectors.FamilySolana:
+			// solana chainID is a string, so we need to use it directly
+			solChain := chain.(*solana.Blockchain)
+			chainIDStr = solChain.SolanaChainID
+			solKey, ok := n.Keys.Solana[chainIDStr]
+			if ok {
+				account = solKey.PublicAddress.String()
+			} else {
+				accounts, fetchErr := n.Clients.GQLClient.FetchKeys(ctx, strings.ToUpper(chain.ChainFamily()))
+				if fetchErr != nil {
+					return fmt.Errorf("failed to fetch account address for node %s and chain %s: %w", n.Name, chain.ChainFamily(), fetchErr)
+				}
+				if len(accounts) == 0 {
+					return fmt.Errorf("failed to fetch account address for node %s and chain %s", n.Name, chain.ChainFamily())
+				}
+				account = accounts[0]
+			}
+		case chainselectors.FamilyAptos:
+			aptosAccount, aptosErr := aptosAccountForNode(n)
+			if aptosErr != nil {
+				return fmt.Errorf("failed to fetch aptos account address for node %s: %w", n.Name, aptosErr)
+			}
+			account = aptosAccount
+			// Deployment parsing prefers AccountAddressPublicKey for Aptos chain configs.
+			// Mirror transmitter into this field so OCRConfigForChainSelector always resolves it.
+			accountAddrPubKey = account
+		case chainselectors.FamilyStellar:
+			// Stellar chainID is a string network id
+			stellarChain, ok := chain.(*stellarbc.Blockchain)
+			if !ok {
+				return fmt.Errorf("expected stellar blockchain, got %T", chain)
+			}
+			chainIDStr = stellarChain.StellarChainID()
+			stellarKey, ok := n.Keys.Stellar[chainIDStr]
+			if ok {
+				account = stellarKey.Account
+			} else {
+				accounts, fetchErr := n.Clients.GQLClient.FetchKeys(ctx, strings.ToUpper(chain.ChainFamily()))
+				if fetchErr != nil {
+					return fmt.Errorf("failed to fetch account address for node %s and chain %s: %w", n.Name, chain.ChainFamily(), fetchErr)
+				}
+				if len(accounts) == 0 {
+					return fmt.Errorf("failed to fetch account address for node %s and chain %s", n.Name, chain.ChainFamily())
+				}
+				account = accounts[0]
+			}
+		default:
+			return fmt.Errorf("unsupported chainType %v", chain.ChainFamily())
+		}
+
+		chainType := strings.ToUpper(chain.ChainFamily())
+		if chain.IsFamily(blockchain.FamilyTron) {
+			chainType = strings.ToUpper(blockchain.FamilyEVM)
+		}
+		dedupeKey := chainIDStr + "\x00" + chainType
+		if _, exists := seen[dedupeKey]; exists {
+			continue
+		}
+		seen[dedupeKey] = struct{}{}
+
+		ocr2BundleID, ok := ocr2BundleIDsByType[chainType]
+		if !ok {
+			fetchErr := error(nil)
+			ocr2BundleID, fetchErr = n.Clients.GQLClient.FetchOCR2KeyBundleID(ctx, chainType)
+			if fetchErr != nil {
+				return fmt.Errorf("failed to fetch OCR2 key bundle id for node %s: %w", n.Name, fetchErr)
+			}
+			if ocr2BundleID == "" {
+				return fmt.Errorf("no OCR2 key bundle id found for node %s", n.Name)
+			}
+			ocr2BundleIDsByType[chainType] = ocr2BundleID
+		}
+		if n.Keys.OCR2BundleIDs == nil {
+			n.Keys.OCR2BundleIDs = make(map[string]string)
+		}
+		n.Keys.OCR2BundleIDs[strings.ToLower(chainType)] = ocr2BundleID
+
+		// Retry create+observe to preserve the original JD behavior.
+		retryErr := retry.New(
+			retry.Context(ctx),
+			retry.Delay(500*time.Millisecond),
+			retry.Attempts(5),
+			retry.DelayType(retry.BackOffDelay),
+		).Do(func() error {
+			nodeChainConfigIDs, err := listNodeChainConfigIDs(ctx, jd, n.JobDistributorDetails.NodeID)
+			if err != nil {
+				return fmt.Errorf("failed to list node chain configs for node %s: %w", n.Name, err)
+			}
+			if _, exists := nodeChainConfigIDs[chainIDStr]; exists {
+				return nil
+			}
+
+			// We need a JD chain config for each chain because later changesets ask the
+			// node for chain data. Each node also needs OCR2 enabled because p2pIDs are
+			// used by some contracts to identify nodes (e.g. capability registry).
+			_, err = n.Clients.GQLClient.CreateJobDistributorChainConfig(ctx, client.JobDistributorChainConfigInput{
+				JobDistributorID:  n.JobDistributorDetails.JDID,
+				ChainID:           chainIDStr,
+				ChainType:         chainType,
+				AccountAddr:       account,
+				AccountAddrPubKey: accountAddrPubKey,
+				AdminAddr:         n.Addresses.AdminAddress,
+				Ocr2Enabled:       true,
+				Ocr2IsBootstrap:   n.HasRole(RoleBootstrap),
+				Ocr2Multiaddr:     n.Addresses.MultiAddress,
+				Ocr2P2PPeerID:     n.Keys.P2PKey.PeerID.String(),
+				Ocr2KeyBundleID:   ocr2BundleID,
+				Ocr2Plugins:       `{}`,
+			})
+			if err != nil {
+				// Config may already exist (e.g. duplicate key from prior run or concurrent node registration); treat as success.
+				if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505") {
+					return nil
+				}
+				return err
+			}
+
+			return errors.New("retrying CreateChainConfig in JD")
+		})
+		if retryErr != nil {
+			return fmt.Errorf("failed to create JD chain configuration for node %s: %w", n.Name, retryErr)
+		}
+	}
+
+	return nil
+}
+
+func listNodeChainConfigIDs(ctx context.Context, jd nodeChainConfigLister, nodeID string) (map[string]struct{}, error) {
+	rpcCtx, cancel := context.WithTimeout(ctx, jdChainConfigRPCTimeout)
+	defer cancel()
+
+	resp, err := jd.ListNodeChainConfigs(rpcCtx, &nodev1.ListNodeChainConfigsRequest{
+		Filter: &nodev1.ListNodeChainConfigsRequest_Filter{
+			NodeIds: []string{nodeID},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	chainIDs := make(map[string]struct{})
+	if resp == nil {
+		return chainIDs, nil
+	}
+
+	for _, chainConfig := range resp.ChainConfigs {
+		if chainConfig.GetChain() == nil {
+			continue
+		}
+		chainIDs[chainConfig.Chain.Id] = struct{}{}
+	}
+
+	return chainIDs, nil
+}
+
+func aptosAccountForNode(n *Node) (string, error) {
+	if n.Keys != nil && n.Keys.Aptos != nil && n.Keys.Aptos.Account != "" {
+		return n.Keys.Aptos.Account, nil
+	}
+
+	// Prefer Aptos account from node metadata when available. Falling back to the
+	// framework helper here is only to backfill older metadata shapes, and we
+	// cache the normalized account back into n.Keys.Aptos below so later callers
+	// can reuse it.
+	runtimeAccounts, err := n.Clients.RestClient.MustReadAptosAccounts()
+	if err != nil {
+		return "", fmt.Errorf("failed to read Aptos keys from node API: %w", err)
+	}
+	if len(runtimeAccounts) == 0 {
+		return "", fmt.Errorf("no Aptos keys found on node %s", n.Name)
+	}
+
+	account, err := crypto.NormalizeAptosAccount(runtimeAccounts[0])
+	if err != nil {
+		return "", fmt.Errorf("invalid Aptos account returned by node API: %w", err)
+	}
+
+	if n.Keys != nil {
+		if n.Keys.Aptos == nil {
+			n.Keys.Aptos = &crypto.AptosKey{}
+		}
+		n.Keys.Aptos.Account = account
+	}
+
+	return account, nil
+}
+
+// AcceptJob accepts the job proposal for the given job proposal spec
+func (n *Node) AcceptJob(ctx context.Context, spec string) error {
+	// fetch JD to get the job proposals
+	jd, err := n.Clients.GQLClient.GetJobDistributor(ctx, n.JobDistributorDetails.JDID)
+	if err != nil {
+		return err
+	}
+	if jd.GetJobProposals() == nil {
+		return fmt.Errorf("no job proposals found for node %s", n.Name)
+	}
+	// locate the job proposal id for the given job spec
+	var idToAccept string
+	for _, jp := range jd.JobProposals {
+		if jp.LatestSpec.Definition == spec {
+			idToAccept = jp.Id
+			break
+		}
+	}
+	if idToAccept == "" {
+		return fmt.Errorf("no job proposal found for job spec %s", spec)
+	}
+	approvedSpec, err := n.Clients.GQLClient.ApproveJobProposalSpec(ctx, idToAccept, false)
+	if err != nil {
+		return err
+	}
+	if approvedSpec == nil {
+		return fmt.Errorf("no job proposal spec found for job id %s", idToAccept)
+	}
+	return nil
+}
+
+// RegisterNodeToJobDistributor fetches the CSA public key of the node and registers the node with the job distributor
+// it sets the node id returned by JobDistributor as a result of registration in the node struct
+func (n *Node) RegisterNodeToJobDistributor(ctx context.Context, cldfEnv *cldf.Environment) error {
+	// Get the public key of the node
+	if n.Keys.CSAKey == nil {
+		csaKeyRes, err := n.Clients.GQLClient.FetchCSAPublicKey(ctx)
+		if err != nil {
+			return err
+		}
+		if csaKeyRes == nil {
+			return fmt.Errorf("no csa key found for node %s", n.Name)
+		}
+
+		n.Keys.CSAKey = &crypto.CSAKey{
+			Key: *csaKeyRes,
+		}
+	}
+
+	labels := make(map[string]string)
+	labels[cre_offchain.FilterKeyDONName] = n.DON.Name
+
+	in := offchain_ops.JDRegisterNodeOpInput{
+		Domain:      cre_offchain.ProductLabel,
+		Environment: cldfEnv.Name,
+		Name:        n.Name,
+		CSAKey:      strings.TrimPrefix(n.Keys.CSAKey.Key, "csa_"),
+		P2PID:       n.PeerID(),
+		DONName:     n.DON.Name,
+		Labels:      labels,
+		IsBootstrap: n.HasRole(RoleBootstrap),
+	}
+
+	regOut, regErr := operations.ExecuteOperation(cldfEnv.OperationsBundle, offchain_ops.JDUpsertNodeOp, offchain_ops.JDRegisterNodeOpDeps{
+		Env: *cldfEnv,
+	}, in)
+	if regErr != nil {
+		return fmt.Errorf("failed to register node in job distributor: %w", regErr)
+	}
+
+	if n.JobDistributorDetails == nil {
+		n.JobDistributorDetails = &JobDistributorDetails{}
+	}
+
+	n.JobDistributorDetails.NodeID = regOut.Output.Node.ID
+
+	return nil
+}
+
+// CreateJobDistributor fetches the keypairs from the job distributor and creates the job distributor in the node
+// and returns the job distributor id
+func (n *Node) CreateJobDistributor(ctx context.Context, jd *jd.JobDistributor) (string, error) {
+	// Get the keypairs from the job distributor
+	csaKey, err := jd.GetCSAPublicKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	// create the job distributor in the node with the csa key
+	resp, err := n.Clients.GQLClient.ListJobDistributors(ctx)
+	if err != nil {
+		return "", fmt.Errorf("could not list job distributors: %w", err)
+	}
+	if len(resp.FeedsManagers.Results) > 0 {
+		for _, fm := range resp.FeedsManagers.Results {
+			if fm.GetPublicKey() == csaKey {
+				return fm.GetId(), nil
+			}
+		}
+	}
+	return n.Clients.GQLClient.CreateJobDistributor(ctx, client.JobDistributorInput{
+		Name:      "Job Distributor",
+		Uri:       jd.WSRPC,
+		PublicKey: csaKey,
+	})
+}
+
+// setUpAndLinkJobDistributor sets up the job distributor in the node and registers the node with the job distributor
+// it sets the job distributor id for node
+func (n *Node) setUpAndLinkJobDistributor(ctx context.Context, cldfEnv *cldf.Environment) error {
+	err := n.RegisterNodeToJobDistributor(ctx, cldfEnv)
+	if err != nil {
+		return err
+	}
+
+	jd, ok := cldfEnv.Offchain.(*jd.JobDistributor)
+	if !ok {
+		return fmt.Errorf("offchain environment is not a *.jd.JobDistributor, but %T", cldfEnv.Offchain)
+	}
+
+	// now create the job distributor in the node
+	id, err := n.CreateJobDistributor(ctx, jd)
+	if err != nil &&
+		!strings.Contains(err.Error(), "DuplicateFeedsManagerError") {
+		return fmt.Errorf("failed to create job distributor in node %s: %w", n.Name, err)
+	}
+	// wait for the node to connect to the job distributor
+	err = retry.New(
+		retry.Context(ctx),
+		retry.Delay(500*time.Millisecond),
+		retry.Attempts(5),
+		retry.DelayType(retry.BackOffDelay),
+	).Do(func() error {
+		getRes, getErr := jd.GetNode(ctx, &nodev1.GetNodeRequest{
+			Id: n.JobDistributorDetails.NodeID,
+		})
+		if getErr != nil {
+			return fmt.Errorf("failed to get node %s: %w", n.Name, getErr)
+		}
+		if getRes.GetNode() == nil {
+			return fmt.Errorf("no node found for node id %s", n.JobDistributorDetails.NodeID)
+		}
+		if !getRes.GetNode().IsConnected {
+			return fmt.Errorf("node %s not connected to job distributor", n.Name)
+		}
+		return nil
+	},
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to connect node %s to job distributor: %w", n.Name, err)
+	}
+	n.JobDistributorDetails.JDID = id
+	return nil
+}
+
+func (n *Node) CancelProposalsByExternalJobID(ctx context.Context, externalJobIDs []string) ([]string, error) {
+	jd, err := n.Clients.GQLClient.GetJobDistributor(ctx, n.JobDistributorDetails.JDID)
+	if err != nil {
+		return nil, err
+	}
+	if jd.GetJobProposals() == nil {
+		return nil, fmt.Errorf("no job proposals found for node %s", n.Name)
+	}
+
+	proposalIDs := []string{}
+	for _, jp := range jd.JobProposals {
+		if !slices.Contains(externalJobIDs, jp.ExternalJobID) {
+			continue
+		}
+
+		proposalIDs = append(proposalIDs, jp.Id)
+		spec, err := n.Clients.GQLClient.CancelJobProposalSpec(ctx, jp.Id)
+		if err != nil {
+			return nil, err
+		}
+
+		if spec == nil {
+			return nil, fmt.Errorf("no job proposal spec found for id %s", jp.Id)
+		}
+	}
+
+	return proposalIDs, nil
+}
+
+func (n *Node) ApproveProposals(ctx context.Context, proposalIDs []string) error {
+	for _, proposalID := range proposalIDs {
+		spec, err := n.Clients.GQLClient.ApproveJobProposalSpec(ctx, proposalID, false)
+		if err != nil {
+			return err
+		}
+		if spec == nil {
+			return fmt.Errorf("no job proposal spec found for id %s", proposalID)
+		}
+	}
+	return nil
+}
+
+func (n *Node) ExportOCR2Keys(id string) (*clclient.ExportedOCR2Key, error) {
+	keys, _, err := n.Clients.RestClient.ExportOCR2Key(id)
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+func LinkToJobDistributor(ctx context.Context, input *LinkDonsToJDInput) error {
+	if input == nil {
+		return errors.New("input is nil")
+	}
+
+	dons := input.Dons.List()
+	donMetadata := input.Topology.DonsMetadata.List()
+	nodeIDsByDON := make([][]string, len(dons))
+
+	errGroup, groupCtx := errgroup.WithContext(ctx)
+	for idx, don := range dons {
+		errGroup.Go(func() error {
+			supportedChains, schErr := findDonSupportedChains(donMetadata[idx], input.Blockchains)
+			if schErr != nil {
+				return errors.Wrap(schErr, "failed to find supported chains for DON")
+			}
+
+			if err := registerWithJD(groupCtx, don, supportedChains, input.CldfEnvironment); err != nil {
+				return fmt.Errorf("failed to register DON %s with JD: %w", don.Name, err)
+			}
+
+			nodeIDsByDON[idx] = don.JDNodeIDs()
+			return nil
+		})
+	}
+
+	if err := errGroup.Wait(); err != nil {
+		return err
+	}
+
+	nodeIDs := make([]string, 0)
+	for _, donNodeIDs := range nodeIDsByDON {
+		nodeIDs = append(nodeIDs, donNodeIDs...)
+	}
+
+	input.CldfEnvironment.NodeIDs = nodeIDs
+	framework.L.Info().
+		Msg("Post-start JD linking completed")
+
+	return nil
+}
+
+// copied from flags package to avoid circular dependency
+func HasFlag(values []string, capability string) bool {
+	if slices.Contains(values, capability) {
+		return true
+	}
+
+	for _, value := range values {
+		if strings.HasPrefix(value, capability+"-") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func findDonSupportedChains(donMetadata *DonMetadata, bcs []blockchains.Blockchain) ([]blockchains.Blockchain, error) {
+	chains := make([]blockchains.Blockchain, 0)
+	chainCapabilityIDs := donMetadata.MustNodeSet().ChainCapabilityChainIDs()
+
+	for _, bc := range bcs {
+		hasEVMChainEnabled := slices.Contains(donMetadata.EVMChains(), bc.ChainID()) || len(donMetadata.EVMChains()) == 0
+		hasChainCapabilityEnabled := slices.Contains(chainCapabilityIDs, bc.ChainID())
+		hasSolanaChainEnabled := false
+		if bc.IsFamily(chainselectors.FamilySolana) {
+			solChain, ok := bc.(*solana.Blockchain)
+			if !ok {
+				return nil, fmt.Errorf("expected solana blockchain, got %T", bc)
+			}
+			hasSolanaChainEnabled = slices.Contains(donMetadata.SolanaChains(), solChain.SolanaChainID)
+		}
+
+		hasStellarChainEnabled := false
+		if bc.IsFamily(chainselectors.FamilyStellar) {
+			stellarChain, ok := bc.(*stellarbc.Blockchain)
+			if !ok {
+				return nil, fmt.Errorf("expected stellar blockchain, got %T", bc)
+			}
+			hasStellarChainEnabled = slices.Contains(donMetadata.StellarChains(), stellarChain.StellarChainID())
+		}
+
+		// Keep legacy EVM/Solana behavior, and also include chains that are explicitly
+		// referenced by chain-scoped capabilities (e.g. aptos-4) or supported Stellar chains.
+		if !hasEVMChainEnabled && !hasChainCapabilityEnabled && !hasSolanaChainEnabled && !hasStellarChainEnabled {
+			continue
+		}
+
+		chains = append(chains, bc)
+	}
+
+	return chains, nil
+}
+
+// Make DonMetadata also implement it, just in case?
+type KeystoneDON interface {
+	KeystoneDONConfig() ks_contracts_op.ConfigureKeystoneDON
+	ResolveORC3Config(config *keystone_changeset.OracleConfig) *keystone_changeset.OracleConfig
+}
+
+func (d *Don) KeystoneDONConfig() ks_contracts_op.ConfigureKeystoneDON {
+	don := ks_contracts_op.ConfigureKeystoneDON{
+		Name: d.Name,
+	}
+
+	for _, node := range d.Nodes {
+		if node.HasRole(RoleWorker) {
+			don.NodeIDs = append(don.NodeIDs, node.Keys.P2PKey.PeerID.String())
+		}
+	}
+
+	return don
+}
+
+func (d *Don) ResolveORC3Config(config *keystone_changeset.OracleConfig) *keystone_changeset.OracleConfig {
+	config.TransmissionSchedule = []int{d.WorkersCount()}
+
+	return config
+}
+
+// GetVaultCapabilityDON returns the DON that has the vault capability registered,
+// along with the current decoded CapabilityConfig for the vault entry.
+func GetVaultCapabilityDON(ctx context.Context, sethClient *seth.Client, capabilitiesRegistryAddr string) (*capabilities_registry_v2.CapabilitiesRegistryDONInfo, *capabilitiespb.CapabilityConfig, error) {
+	capReg, err := capabilities_registry_v2.NewCapabilitiesRegistry(
+		common.HexToAddress(capabilitiesRegistryAddr), sethClient.Client,
+	)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "failed to create capabilities registry wrapper")
+	}
+
+	const pageSize int64 = 100
+
+	var (
+		targetDON *capabilities_registry_v2.CapabilitiesRegistryDONInfo
+		targetCC  capabilities_registry_v2.CapabilitiesRegistryCapabilityConfiguration
+	)
+	for start := int64(0); targetDON == nil; start += pageSize {
+		donsPage, getErr := capReg.GetDONs(&bind.CallOpts{Context: ctx}, big.NewInt(start), big.NewInt(pageSize))
+		if getErr != nil {
+			return nil, nil, errors.Wrap(getErr, "failed to get DONs from capabilities registry")
+		}
+
+		for i := range donsPage {
+			for _, cc := range donsPage[i].CapabilityConfigurations {
+				if cc.CapabilityId == vault_helpers.CapabilityID {
+					don := donsPage[i]
+					targetDON = &don
+					targetCC = cc
+					break
+				}
+			}
+			if targetDON != nil {
+				break
+			}
+		}
+
+		if len(donsPage) < int(pageSize) {
+			break
+		}
+	}
+	if targetDON == nil {
+		return nil, nil, fmt.Errorf("no DON with %s capability found in capabilities registry", vault_helpers.CapabilityID)
+	}
+
+	existingCfg := &capabilitiespb.CapabilityConfig{}
+	if len(targetCC.Config) > 0 {
+		if unmarshalErr := proto.Unmarshal(targetCC.Config, existingCfg); unmarshalErr != nil {
+			return nil, nil, errors.Wrap(unmarshalErr, "failed to unmarshal existing vault capability config")
+		}
+	}
+
+	return targetDON, existingCfg, nil
+}

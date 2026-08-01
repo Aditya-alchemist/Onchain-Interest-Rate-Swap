@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function HedgePanel() {
-  return <div>Hedge Panel</div>;
+  return <div>HedgePanel</div>;
 }

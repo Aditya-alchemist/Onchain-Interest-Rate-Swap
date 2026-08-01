@@ -1,0 +1,80 @@
+name: "Release Notifications"
+##
+# Used by workflows within this repo and external repos to send notifications for releases to Slack.
+##
+on:
+  workflow_call:
+    inputs:
+      git-ref:
+        description: "Git tag or ref name to announce"
+        required: true
+        type: string
+      git-ref-type:
+        description: "Git ref type (e.g. tag)"
+        required: true
+        type: string
+      changelog-url:
+        description: "URL for the changelog entry"
+        required: true
+        type: string
+      docker-image-names:
+        description: |
+          Optional multi-line string of docker image names with their digests.
+          Each line should be in the format: `image_name|digest`
+
+          Example:
+            public.ecr.aws/chainlink/ccip:2.34.1-ccip-beta.3|sha256:5f218f...
+            public.ecr.aws/chainlink/chainlink:2.34.1-beta.3|sha256:b48d5b...
+        type: string
+        required: false
+
+    outputs:
+      slack-thread-ts:
+        description: "timestamp of the slack thread"
+        value: ${{ jobs.slack-notify.outputs.slack-thread-ts }}
+  workflow_dispatch:
+    inputs:
+      git-ref:
+        description: "Git tag or ref name to announce"
+        required: true
+        type: string
+      git-ref-type:
+        description: "Git ref type (e.g. tag)"
+        required: true
+        type: string
+      changelog-url:
+        description: "URL for the changelog entry"
+        required: true
+        type: string
+      docker-image-names:
+        description: |
+          Optional multi-line string of docker image names with their digests.
+          Each line should be in the format: `image_name|digest`
+
+          Example:
+            public.ecr.aws/chainlink/ccip:2.34.1-ccip-beta.3|sha256:5f218f...
+            public.ecr.aws/chainlink/chainlink:2.34.1-beta.3|sha256:b48d5b...
+        type: string
+        required: false
+
+permissions: {}
+
+jobs:
+  slack-notify:
+    name: "Notify Slack"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      slack-thread-ts: ${{ steps.slack-notify.outputs.slack-thread-ts }}
+    steps:
+      - name: Notify Slack
+        uses: smartcontractkit/.github/actions/slack-notify-git-ref@slack-notify-git-ref/1.2.0
+        id: slack-notify
+        with:
+          slack-channel-id: ${{ secrets.SLACK_CHANNEL_RELEASE_NOTIFICATIONS }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN_RELENG }}
+          git-ref: ${{ inputs.git-ref }}
+          git-ref-type: ${{ inputs.git-ref-type }}
+          changelog-url: ${{ inputs.changelog-url }}
+          docker-image-names: ${{ inputs.docker-image-names }}

@@ -1,0 +1,160 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/rogpeppe/go-internal/testscript"
+	"github.com/stretchr/testify/require"
+
+	"github.com/smartcontractkit/freeport"
+
+	"github.com/smartcontractkit/chainlink/v2/core"
+	"github.com/smartcontractkit/chainlink/v2/core/static"
+	"github.com/smartcontractkit/chainlink/v2/internal/testdb"
+	"github.com/smartcontractkit/chainlink/v2/tools/txtar"
+)
+
+// special files can be included to allocate additional test resources
+const (
+	// testDBName triggers initializing of a test database.
+	// The URL will be set as the value of an env var named by the file.
+	//
+	//	-- testdb.txt --
+	//	CL_DATABASE_URL
+	testDBName = "testdb.txt"
+	// testPortName triggers injection of a free port as the value of an env var named by the file.
+	//
+	//	-- testport.txt --
+	//	PORT
+	testPortName = "testport.txt"
+	// integrationBuildName acts like a build tag: //go:build integration
+	integrationBuildName = "go:build.integration"
+)
+
+func TestMain(m *testing.M) {
+	testscript.Main(m, map[string]func(){
+		"chainlink": func() { os.Exit(core.Main()) },
+	})
+}
+
+var (
+	// Temporary workaround for skipping flaky tests as we improve our tracking process
+	skipFlakyTests = map[string]string{ // test name: issue number
+		// "TestScripts/nodes/evm/list/list":       "https://smartcontract-it.atlassian.net/browse/DX-107",
+		// "TestScripts/keys/eth/list/unavailable": "https://smartcontract-it.atlassian.net/browse/DX-110",
+	}
+)
+
+// TestScripts walks through the testdata/scripts directory and runs all tests that end in
+// .txt or .txtar with the testscripts library. To run an individual test, specify it in the
+// -run param of go test without the txtar or txt suffix, like so:
+// go test . -run TestScripts/node/validate/default
+func TestScripts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping testscript")
+	}
+
+	tmp := t.TempDir()
+	require.NoError(t, os.Setenv("GOTMPDIR", tmp))
+	t.Cleanup(func() {
+		require.NoError(t, os.Unsetenv("GOTMPDIR"))
+	})
+	t.Parallel()
+
+	visitor := txtar.NewDirVisitor("testdata/scripts", txtar.Recurse, func(path string) error {
+		t.Run(strings.TrimPrefix(path, "testdata/scripts/"), func(t *testing.T) {
+			t.Parallel()
+
+			// Check each .txtar file against skipFlakyTests
+			matches, err := filepath.Glob(filepath.Join(path, "*.txtar"))
+			require.NoError(t, err)
+
+			var filesToRun []string
+			for _, match := range matches {
+				scriptName := strings.TrimSuffix(filepath.Base(match), ".txtar")
+				fullTestName := t.Name() + "/" + scriptName
+
+				if message, shouldSkip := skipFlakyTests[fullTestName]; shouldSkip {
+					t.Logf("Skipping Flaky Test: %s - %s", fullTestName, message)
+					continue
+				}
+				filesToRun = append(filesToRun, match)
+			}
+
+			if len(filesToRun) == 0 {
+				t.Skip("all scripts in directory skipped")
+			}
+
+			testscript.Run(t, testscript.Params{
+				Files:               filesToRun,
+				Setup:               commonEnv(t),
+				ContinueOnError:     true,
+				RequireExplicitExec: true,
+				// UpdateScripts:   true, // uncomment to update golden files
+			})
+		})
+		return nil
+	})
+
+	require.NoError(t, visitor.Walk())
+}
+
+// isIntegrationBuild is toggled true by a func init() with a //go:build integration gate
+var isIntegrationBuild = false
+
+func commonEnv(t testing.TB) func(*testscript.Env) error {
+	return func(te *testscript.Env) error {
+		if _, err := os.Stat(filepath.Join(te.WorkDir, integrationBuildName)); err == nil && !isIntegrationBuild {
+			te.T().Skip("integration test")
+			return nil
+		}
+
+		te.Setenv("HOME", "$WORK/home")
+		te.Setenv("VERSION", static.Version)
+		te.Setenv("VERSION_TAG", static.VersionTag)
+		te.Setenv("COMMIT_SHA", static.Sha)
+		te.Setenv("TMPDIR", "/tmp") // osx default is too long for go-plugin sockets
+
+		b, err := os.ReadFile(filepath.Join(te.WorkDir, testPortName))
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read file %s: %w", testPortName, err)
+		} else if err == nil {
+			envVarName := strings.TrimSpace(string(b))
+			te.T().Log("test port requested:", envVarName)
+
+			port, ret, err2 := takeFreePort()
+			if err2 != nil {
+				return err2
+			}
+			te.Defer(ret)
+
+			te.Setenv(envVarName, strconv.Itoa(port))
+		}
+
+		b, err = os.ReadFile(filepath.Join(te.WorkDir, testDBName))
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read file %s: %w", testDBName, err)
+		} else if err == nil {
+			envVarName := strings.TrimSpace(string(b))
+			te.T().Log("test database requested:", envVarName)
+
+			u2 := testdb.New(t, true).String()
+
+			te.Setenv(envVarName, u2)
+		}
+		return nil
+	}
+}
+
+func takeFreePort() (int, func(), error) {
+	ports, err := freeport.Take(1)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to get free port: %w", err)
+	}
+	return ports[0], func() { freeport.Return(ports) }, nil
+}

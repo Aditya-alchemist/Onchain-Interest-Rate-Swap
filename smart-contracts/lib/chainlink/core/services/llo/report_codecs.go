@@ -1,0 +1,24 @@
+package llo
+
+import (
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
+	llotypes "github.com/smartcontractkit/chainlink-common/pkg/types/llo"
+	llocommon "github.com/smartcontractkit/chainlink-data-streams/llo/common"
+	"github.com/smartcontractkit/chainlink-data-streams/llo/cre"
+	"github.com/smartcontractkit/chainlink-data-streams/llo/reportcodecs/evm"
+)
+
+// NOTE: All supported codecs must be specified here
+func NewReportCodecs(lggr logger.Logger, donID uint32) map[llotypes.ReportFormat]llocommon.ReportCodec {
+	codecs := make(map[llotypes.ReportFormat]llocommon.ReportCodec)
+
+	codecs[llotypes.ReportFormatJSON] = llocommon.JSONReportCodec{}
+	codecs[llotypes.ReportFormatEVMPremiumLegacy] = evm.NewReportCodecPremiumLegacy(lggr, donID)
+	codecs[llotypes.ReportFormatEVMABIEncodeUnpacked] = evm.NewReportCodecEVMABIEncodeUnpacked(lggr, donID)
+	codecs[llotypes.ReportFormatEVMABIEncodeUnpackedExpr] = evm.NewReportCodecEVMABIEncodeUnpackedExpr(lggr, donID)
+	codecs[llotypes.ReportFormatCapabilityTrigger] = cre.NewReportCodecCapabilityTrigger(lggr, donID)
+	codecs[llotypes.ReportFormatEVMStreamlined] = evm.NewReportCodecStreamlined(lggr)
+	codecs[llotypes.ReportFormatHistoryBackfill] = llocommon.ReportCodecHistoryBackfill{}
+
+	return codecs
+}

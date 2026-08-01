@@ -1,0 +1,79 @@
+package config
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+	pkgerrors "github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/smartcontractkit/chainlink-data-streams/llo/transmitter/de"
+)
+
+var (
+	ErrEnvUnset = pkgerrors.New("env var unset")
+)
+
+type LogfFn func(string, ...any)
+
+type AppConfig interface {
+	AppID() uuid.UUID
+	RootDir() string
+	ShutdownGracePeriod() time.Duration
+	InsecureFastScrypt() bool
+	EVMEnabled() bool
+	CosmosEnabled() bool
+	SolanaEnabled() bool
+	StarkNetEnabled() bool
+	AptosEnabled() bool
+	TronEnabled() bool
+	TONEnabled() bool
+	SuiEnabled() bool
+	StellarEnabled() bool
+
+	Validate() error
+	ValidateDB() error
+	LogConfiguration(log, warn LogfFn)
+	SetLogLevel(lvl zapcore.Level) error
+	SetLogSQL(logSQL bool)
+	SetPasswords(keystore, vrf *string)
+
+	AuditLogger() AuditLogger
+	AutoPprof() AutoPprof
+	Capabilities() Capabilities
+	Workflows() Workflows
+	Database() Database
+	Feature() Feature
+	Insecure() Insecure
+	JobDistributor() JobDistributor
+	JobPipeline() JobPipeline
+	Log() Log
+	Mercury() de.Mercury
+	OCR() OCR
+	OCR2() OCR2
+	P2P() P2P
+	Password() Password
+	Prometheus() Prometheus
+	Pyroscope() Pyroscope
+	Sentry() Sentry
+	TelemetryIngress() TelemetryIngress
+	Threshold() Threshold
+	WebServer() WebServer
+	Tracing() Tracing
+	Telemetry() Telemetry
+	CRE() CRE
+	CCV() CCV
+	Billing() Billing
+	BridgeStatusReporter() BridgeStatusReporter
+	JobSpecReporter() JobSpecReporter
+	Sharding() Sharding
+	LOOPP() LOOPP
+}
+
+type DatabaseBackupMode string
+
+var (
+	DatabaseBackupModeNone DatabaseBackupMode = "none"
+	DatabaseBackupModeLite DatabaseBackupMode = "lite"
+	DatabaseBackupModeFull DatabaseBackupMode = "full"
+)

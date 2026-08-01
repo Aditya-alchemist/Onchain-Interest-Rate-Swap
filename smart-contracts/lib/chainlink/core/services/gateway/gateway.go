@@ -1,0 +1,320 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/smartcontractkit/chainlink-common/pkg/jsonrpc2"
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
+	"github.com/smartcontractkit/chainlink-common/pkg/services"
+	"github.com/smartcontractkit/chainlink-common/pkg/settings/limits"
+
+	"github.com/smartcontractkit/chainlink/v2/core/services/gateway/api"
+	"github.com/smartcontractkit/chainlink/v2/core/services/gateway/config"
+	"github.com/smartcontractkit/chainlink/v2/core/services/gateway/handlers"
+	handlerscommon "github.com/smartcontractkit/chainlink/v2/core/services/gateway/handlers/common"
+	"github.com/smartcontractkit/chainlink/v2/core/services/gateway/monitoring"
+	gw_net "github.com/smartcontractkit/chainlink/v2/core/services/gateway/network"
+	"github.com/smartcontractkit/chainlink/v2/core/services/job"
+)
+
+var promRequest = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "gateway_request",
+	Help: "Metric to track received requests and response codes",
+}, []string{"response_code"})
+
+type Gateway interface {
+	job.ServiceCtx
+	gw_net.HTTPRequestHandler
+
+	GetUserPort() int
+	GetNodePort() int
+}
+
+type HandlerType = string
+
+// HandlerFactory creates handlers for different handler types.
+// The new signature accepts sharded DON configurations to support multiple DON shards.
+type HandlerFactory interface {
+	NewHandler(
+		handlerType HandlerType,
+		handlerConfig json.RawMessage,
+		shardedDONs []config.ShardedDONConfig,
+		shardsConnMgrs [][]handlers.DON,
+	) (handlers.Handler, error)
+}
+
+type gateway struct {
+	services.StateMachine
+
+	codec                 api.Codec
+	httpServer            gw_net.HTTPServer
+	handlers              map[string]handlers.Handler // legacy: keyed by DON ID
+	serviceNameToDonID    map[string]string           // legacy: service name -> DON ID
+	serviceToMultiHandler map[string]handlers.Handler // new: service name -> handler
+	connMgr               ConnectionManager
+	gMetrics              *monitoring.GatewayMetrics
+	lggr                  logger.Logger
+}
+
+func NewGatewayFromConfig(cfg *config.GatewayConfig, handlerFactory HandlerFactory, lggr logger.Logger, lf limits.Factory) (Gateway, error) {
+	codec := &api.JsonRPCCodec{}
+	gMetrics, err := monitoring.NewGatewayMetrics()
+	if err != nil {
+		return nil, fmt.Errorf("error creating gateway metrics: %w", err)
+	}
+	httpServer, err := gw_net.NewHTTPServer(&cfg.UserServerConfig, lggr, lf)
+	if err != nil {
+		return nil, err
+	}
+	connMgr, err := NewConnectionManager(cfg, clockwork.NewRealClock(), gMetrics, lggr, lf)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cfg.Services) == 0 || len(cfg.ShardedDONs) == 0 {
+		return nil, errors.New("no services or DONs configured - Gateway has to use service-based configuration")
+	}
+
+	lggr.Infow("setting up gateway from config", "nServices", len(cfg.Services), "nShardedDONs", len(cfg.ShardedDONs))
+	serviceToMultiHandler, err := setupFromNewConfig(cfg, handlerFactory, connMgr, lggr)
+	if err != nil {
+		return nil, err
+	}
+
+	return NewGateway(codec, httpServer, nil, nil, serviceToMultiHandler, connMgr, gMetrics, lggr), nil
+}
+
+// setupFromNewConfig creates handlers using the new Services/ShardedDONs config format.
+// Returns serviceToMultiHandler map (service name -> handler).
+func setupFromNewConfig(
+	cfg *config.GatewayConfig,
+	handlerFactory HandlerFactory,
+	connMgr ConnectionManager,
+	lggr logger.Logger,
+) (map[string]handlers.Handler, error) {
+	serviceToMultiHandler := make(map[string]handlers.Handler)
+
+	donNameToConfig := make(map[string]config.ShardedDONConfig)
+	for _, don := range cfg.ShardedDONs {
+		for si, shard := range don.Shards {
+			for ni, node := range shard.Nodes {
+				don.Shards[si].Nodes[ni].Address = strings.ToLower(node.Address)
+			}
+		}
+		donNameToConfig[don.DonName] = don
+	}
+
+	// For each service, create a MultiHandler with its handlers and attached DONs
+	// Each DON can belong to multiple services. Each service can have multiple handlers.
+	// In practice, each handler is associated with a single service (either 'workflows' or 'vault').
+	for _, svc := range cfg.Services {
+		var shardedDONs []config.ShardedDONConfig
+		var shardsConnMgrs [][]handlers.DON
+
+		for _, donName := range svc.DONs {
+			donCfg, ok := donNameToConfig[donName]
+			if !ok {
+				return nil, fmt.Errorf("service %q references unknown DON: %s", svc.ServiceName, donName)
+			}
+			shardedDONs = append(shardedDONs, donCfg)
+
+			var shardConnMgrs []handlers.DON
+			for shardIdx := range donCfg.Shards {
+				donID := config.ShardDONID(donName, shardIdx)
+				donConnMgr := connMgr.DONConnectionManager(donID)
+				if donConnMgr == nil {
+					return nil, fmt.Errorf("connection manager for DON %s shard %d not found", donName, shardIdx)
+				}
+				shardConnMgrs = append(shardConnMgrs, donConnMgr)
+			}
+			shardsConnMgrs = append(shardsConnMgrs, shardConnMgrs)
+		}
+
+		handler, err := NewMultiHandler(handlerFactory, svc.Handlers, shardedDONs, shardsConnMgrs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create handler for service %s: %w", svc.ServiceName, err)
+		}
+
+		serviceToMultiHandler[svc.ServiceName] = handler
+
+		// Set (multi)handler on all associated DON connection managers, keyed by service name
+		for i, donName := range svc.DONs {
+			for shardIdx := range shardsConnMgrs[i] {
+				donID := config.ShardDONID(donName, shardIdx)
+				donConnMgr := connMgr.DONConnectionManager(donID)
+				if donConnMgr == nil {
+					return nil, fmt.Errorf("connection manager for DON %s shard %d not found", donName, shardIdx)
+				}
+				donConnMgr.SetHandler(svc.ServiceName, handler)
+			}
+		}
+
+		lggr.Infow("created handler for service", "service", svc.ServiceName, "dons", svc.DONs, "handlers", len(svc.Handlers))
+	}
+
+	return serviceToMultiHandler, nil
+}
+
+func NewGateway(codec api.Codec, httpServer gw_net.HTTPServer, handlers map[string]handlers.Handler, serviceNameToDonID map[string]string, serviceToMultiHandler map[string]handlers.Handler, connMgr ConnectionManager, gMetrics *monitoring.GatewayMetrics, lggr logger.Logger) Gateway {
+	gw := &gateway{
+		codec:                 codec,
+		httpServer:            httpServer,
+		handlers:              handlers,
+		serviceNameToDonID:    serviceNameToDonID,
+		serviceToMultiHandler: serviceToMultiHandler,
+		connMgr:               connMgr,
+		gMetrics:              gMetrics,
+		lggr:                  logger.Named(lggr, "Gateway"),
+	}
+	httpServer.SetHTTPRequestHandler(gw)
+	return gw
+}
+
+func (g *gateway) Start(ctx context.Context) error {
+	return g.StartOnce("Gateway", func() error {
+		g.lggr.Info("starting gateway")
+		for _, handler := range g.handlers {
+			if err := handler.Start(ctx); err != nil {
+				return err
+			}
+		}
+		for _, handler := range g.serviceToMultiHandler {
+			if err := handler.Start(ctx); err != nil {
+				return err
+			}
+		}
+		if err := g.connMgr.Start(ctx); err != nil {
+			return err
+		}
+		return g.httpServer.Start(ctx)
+	})
+}
+
+func (g *gateway) Close() error {
+	return g.StopOnce("Gateway", func() (err error) {
+		g.lggr.Info("closing gateway")
+		err = errors.Join(err, g.httpServer.Close())
+		err = errors.Join(err, g.connMgr.Close())
+		for _, handler := range g.handlers {
+			err = errors.Join(err, handler.Close())
+		}
+		for _, handler := range g.serviceToMultiHandler {
+			err = errors.Join(err, handler.Close())
+		}
+		return
+	})
+}
+
+// Called by the server
+func (g *gateway) ProcessRequest(ctx context.Context, rawRequest []byte, auth string) (rawResponse []byte, httpStatusCode int) {
+	// decode
+	jsonRequest, err := jsonrpc2.DecodeRequest[json.RawMessage](rawRequest, auth)
+	if err != nil {
+		return newError("", api.UserMessageParseError, err.Error())
+	}
+	msg, err := g.codec.DecodeJSONRequest(jsonRequest)
+	if err != nil {
+		return newError(jsonRequest.ID, api.UserMessageParseError, err.Error())
+	}
+	if len(jsonRequest.ID) > 200 {
+		// Arbitrary limit to prevent abuse
+		return newError(jsonRequest.ID, api.UserMessageParseError, "request ID is too long: "+strconv.Itoa(len(jsonRequest.ID))+". max is 200 characters")
+	}
+	var isLegacyRequest = false
+	var h handlers.Handler
+	var handlerKey string
+	if msg == nil || msg.Body.DonId == "" {
+		serviceName := jsonRequest.ServiceName()
+		if handler, ok := g.serviceToMultiHandler[serviceName]; ok {
+			h = handler
+			handlerKey = serviceName
+		} else if donID, ok := g.serviceNameToDonID[serviceName]; ok {
+			// Fallback to legacy service name -> DON ID mapping
+			if handler, ok := g.handlers[donID]; ok {
+				h = handler
+				handlerKey = donID
+			}
+		}
+		if h == nil {
+			return newError(jsonRequest.ID, api.HandlerError, "Service name not found: "+serviceName)
+		}
+	} else {
+		// Legacy request with DON ID - validate and fetch handler
+		isLegacyRequest = true
+		if err = msg.Validate(); err != nil {
+			return newError(jsonRequest.ID, api.UserMessageParseError, err.Error())
+		}
+		handlerKey = msg.Body.DonId
+		var ok bool
+		h, ok = g.handlers[handlerKey]
+		if !ok {
+			return newError(jsonRequest.ID, api.UnsupportedDONIdError, "Unsupported DON ID: "+handlerKey)
+		}
+	}
+
+	startTime := time.Now()
+	var method string
+	callback := handlerscommon.NewCallback()
+	if isLegacyRequest {
+		method = msg.Body.Method
+		err = h.HandleLegacyUserMessage(ctx, msg, callback)
+	} else {
+		method = jsonRequest.Method
+		err = h.HandleJSONRPCUserMessage(ctx, jsonRequest, callback)
+	}
+	if err != nil {
+		return newError(jsonRequest.ID, api.HandlerError, err.Error())
+	}
+
+	response, err := callback.Wait(ctx)
+	duration := time.Since(startTime)
+	if err != nil {
+		response := api.RequestTimeoutError
+		g.gMetrics.RecordUserMsgHandlerDuration(ctx, method, response.String(), duration)
+		g.gMetrics.RecordUserMsgHandlerInvocation(ctx, method, response.String())
+		return newError(jsonRequest.ID, response, "handler timeout: "+err.Error())
+	}
+	g.gMetrics.RecordUserMsgHandlerDuration(ctx, method, response.ErrorCode.String(), duration)
+	g.gMetrics.RecordUserMsgHandlerInvocation(ctx, method, response.ErrorCode.String())
+
+	g.lggr.Debugw("received response from handler", "handler", handlerKey, "response", response, "requestID", jsonRequest.ID)
+	promRequest.WithLabelValues(response.ErrorCode.String()).Inc()
+	return response.RawResponse, api.ToHttpErrorCode(response.ErrorCode)
+}
+
+func newError(id string, errCode api.ErrorCode, errMsg string) ([]byte, int) {
+	response := jsonrpc2.Response[json.RawMessage]{
+		Version: jsonrpc2.JsonRpcVersion,
+		ID:      id,
+		Error: &jsonrpc2.WireError{
+			Code:    api.ToJSONRPCErrorCode(errCode),
+			Message: errMsg,
+			Data:    nil,
+		},
+	}
+	rawResponse, err := json.Marshal(response)
+	if err != nil {
+		rawResponse = []byte("fatal error" + err.Error())
+	}
+	promRequest.WithLabelValues(errCode.String()).Inc()
+	return rawResponse, api.ToHttpErrorCode(errCode)
+}
+
+func (g *gateway) GetUserPort() int {
+	return g.httpServer.GetPort()
+}
+
+func (g *gateway) GetNodePort() int {
+	return g.connMgr.GetPort()
+}

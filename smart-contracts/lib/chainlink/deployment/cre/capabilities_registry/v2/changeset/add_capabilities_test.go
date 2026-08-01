@@ -1,0 +1,451 @@
+package changeset_test
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"testing"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
+
+	"github.com/smartcontractkit/chainlink-deployments-framework/engine/test/runtime"
+	capabilities_registry_v2 "github.com/smartcontractkit/chainlink-evm/gethwrappers/workflow/generated/capabilities_registry_wrapper_v2"
+
+	"github.com/smartcontractkit/chainlink/deployment/cre/capabilities_registry/v2/changeset"
+	"github.com/smartcontractkit/chainlink/deployment/cre/capabilities_registry/v2/changeset/operations/contracts"
+	"github.com/smartcontractkit/chainlink/deployment/cre/capabilities_registry/v2/changeset/pkg"
+	crecontracts "github.com/smartcontractkit/chainlink/deployment/cre/contracts"
+	"github.com/smartcontractkit/chainlink/deployment/cre/test"
+)
+
+var (
+	newCapID       = "new-test-capability@1.0.0"
+	anotherCapID   = "another-test-capability@1.0.0"
+	newCapMetadata = map[string]any{"capabilityType": float64(0), "responseType": float64(0)}
+	newCapConfig   = map[string]any{
+		"restrictedConfig": map[string]any{
+			"fields": map[string]any{
+				"spendRatios": map[string]any{
+					"mapValue": map[string]any{
+						"fields": map[string]any{
+							"RESOURCE_TYPE_COMPUTE": map[string]any{
+								"stringValue": "1.0",
+							},
+						},
+					},
+				},
+			},
+		},
+		"methodConfigs": map[string]any{
+			"BalanceAt": map[string]any{
+				"remoteExecutableConfig": map[string]any{
+					"requestTimeout":            "30s",
+					"serverMaxParallelRequests": 10,
+				},
+			},
+			"LogTrigger": map[string]any{
+				"remoteTriggerConfig": map[string]any{
+					"registrationRefresh":     "20s",
+					"registrationExpiry":      "60s",
+					"minResponsesToAggregate": 2,
+					"messageExpiry":           "120s",
+					"maxBatchSize":            25,
+					"batchCollectionPeriod":   "0.2s",
+				},
+			},
+			"WriteReport": map[string]any{
+				"remoteExecutableConfig": map[string]any{
+					"transmissionSchedule":      "OneAtATime",
+					"deltaStage":                "38.4s",
+					"requestTimeout":            "268.8s",
+					"serverMaxParallelRequests": 10,
+					"requestHasherType":         "WriteReportExcludeSignatures",
+				},
+			},
+		},
+	}
+)
+
+func TestAddCapabilities_VerifyPreconditions(t *testing.T) {
+	cs := changeset.AddCapabilities{}
+
+	h := test.NewTestHarness(t)
+	chainSelector := h.RegistrySelector
+
+	capCfg := []contracts.CapabilityConfig{{Capability: contracts.Capability{CapabilityID: "cap@1.0.0"}, Config: map[string]any{"k": "v"}}}
+
+	// Empty map
+	err := cs.VerifyPreconditions(h.Runtime.Environment(), changeset.AddCapabilitiesInput{
+		RegistryChainSel:     chainSelector,
+		RegistryQualifier:    "qual",
+		DonCapabilityConfigs: nil,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "donCapabilityConfigs must contain at least one DON entry")
+
+	// Empty DON name key
+	err = cs.VerifyPreconditions(h.Runtime.Environment(), changeset.AddCapabilitiesInput{
+		RegistryChainSel:  chainSelector,
+		RegistryQualifier: "qual",
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			"": capCfg,
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be empty strings")
+
+	// Empty config list for a DON
+	err = cs.VerifyPreconditions(h.Runtime.Environment(), changeset.AddCapabilitiesInput{
+		RegistryChainSel:  chainSelector,
+		RegistryQualifier: "qual",
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			"don-1": {},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least one capability config")
+
+	// Valid (single DON)
+	err = cs.VerifyPreconditions(h.Runtime.Environment(), changeset.AddCapabilitiesInput{
+		RegistryChainSel:  chainSelector,
+		RegistryQualifier: "qual",
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			"don-1": capCfg,
+		},
+	})
+	require.NoError(t, err)
+
+	// Valid (multiple DONs)
+	err = cs.VerifyPreconditions(h.Runtime.Environment(), changeset.AddCapabilitiesInput{
+		RegistryChainSel:  chainSelector,
+		RegistryQualifier: "qual",
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			"don-1": capCfg,
+			"don-2": capCfg,
+		},
+	})
+	require.NoError(t, err)
+}
+
+func addNewCapability(t *testing.T, h *test.Harness, capID string) {
+	input := changeset.AddCapabilitiesInput{
+		RegistryChainSel:  h.RegistrySelector,
+		RegistryQualifier: test.RegistryQualifier,
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			test.DONName: {{
+				Capability: contracts.Capability{
+					CapabilityID:          capID,
+					ConfigurationContract: common.Address{},
+					Metadata:              newCapMetadata,
+				},
+				Config: newCapConfig,
+			}},
+		},
+		Force: true,
+	}
+
+	err := h.Runtime.Exec(
+		runtime.ChangesetTask(changeset.AddCapabilities{}, input),
+	)
+	require.NoError(t, err)
+}
+
+func requireCapability(t *testing.T, h *test.Harness, capID string) {
+	// Validate on-chain state
+	capReg, err := capabilities_registry_v2.NewCapabilitiesRegistry(
+		h.RegistryAddress,
+		h.Runtime.Environment().BlockChains.EVMChains()[h.RegistrySelector].Client,
+	)
+	require.NoError(t, err)
+
+	caps, err := pkg.GetCapabilities(nil, capReg)
+	require.NoError(t, err)
+	var found bool
+	for _, c := range caps {
+		if c.CapabilityId == capID {
+			// metadata check
+			var gotMeta map[string]any
+			require.NoError(t, json.Unmarshal(c.Metadata, &gotMeta))
+			assert.Equal(t, newCapMetadata, gotMeta)
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "new capability %s should be registered", capID)
+
+	// Nodes should now include new capability id
+	nodes, err := pkg.GetNodes(nil, capReg)
+	require.NoError(t, err)
+	for _, n := range nodes {
+		assert.Contains(t, n.CapabilityIds, capID, "node should have new capability id appended")
+	}
+
+	// Here we check that the uptyped input of the changeset was correctly applied on-chain as proto and can be decoded back to the same config
+	// encoding to proto bytes is same as in the changeset and decoding to cap cfg is same as in the v2 registry syncer
+	capCfg := pkg.CapabilityConfig(newCapConfig)
+	configProtoBytes, err := capCfg.MarshalProto() // on chain it is stored as proto bytes
+	require.NoError(t, err, "should be able to marshal new capability config to proto bytes")
+
+	expectedConfig := new(pkg.CapabilityConfig) // expected decoded config, to be compared with decoded on-chain config
+	err = expectedConfig.UnmarshalProto(configProtoBytes)
+	require.NoError(t, err, "should be able to unmarshal new capability config from proto bytes")
+
+	// DON capability configurations should include new capability config
+	don, err := capReg.GetDONByName(nil, test.DONName)
+	require.NoError(t, err)
+	var cfgFound bool
+	for _, cfg := range don.CapabilityConfigurations {
+		if cfg.CapabilityId == capID {
+			got := new(pkg.CapabilityConfig)
+			require.NoError(t, got.UnmarshalProto(cfg.Config), "unmarshal capability config proto bytes should not error")
+			if diff := cmp.Diff(expectedConfig, got, protocmp.Transform()); diff != "" {
+				t.Errorf("capability config proto bytes should match: %s", diff)
+			}
+
+			cfgFound = true
+		}
+	}
+	require.True(t, cfgFound, "expected don to have %s capability configuration", capID)
+}
+
+func TestAddCapabilities_Apply(t *testing.T) {
+	// NewTestHarness deploys a cap reg v2 and configures it. So no need to do that here, just leverage the existing one.
+	h := test.NewTestHarness(t)
+
+	addNewCapability(t, h, newCapID)
+	requireCapability(t, h, newCapID)
+
+	// add another capability and ensure that both are present
+	addNewCapability(t, h, anotherCapID)
+	requireCapability(t, h, newCapID)
+	requireCapability(t, h, anotherCapID)
+}
+
+func TestAddCapabilities_Apply_MCMS(t *testing.T) {
+	// NewTestHarness deploys a cap reg v2 and configures it. So no need to do that here, just leverage the existing one.
+	h := test.NewTestHarness(t, test.WithMCMS())
+
+	input := changeset.AddCapabilitiesInput{
+		RegistryChainSel:  h.RegistrySelector,
+		RegistryQualifier: test.RegistryQualifier,
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			test.DONName: {{
+				Capability: contracts.Capability{
+					CapabilityID:          newCapID,
+					ConfigurationContract: common.Address{},
+					Metadata:              newCapMetadata,
+				},
+				Config: newCapConfig,
+			}},
+		},
+		Force: true,
+		MCMSConfig: &crecontracts.MCMSConfig{
+			MinDelay: 1 * time.Second,
+			TimelockQualifierPerChain: map[uint64]string{
+				h.RegistrySelector: "",
+			},
+		},
+	}
+
+	// Preconditions
+	addCapabilitiesTask := runtime.ChangesetTask(changeset.AddCapabilities{}, input)
+	err := h.Runtime.Exec(
+		addCapabilitiesTask,
+	)
+	require.NoError(t, err)
+
+	out := h.Runtime.State().Outputs[addCapabilitiesTask.ID()]
+
+	// Verify the changeset output
+	require.NotNil(t, out.Reports, "reports should be present")
+	require.NotEmpty(t, out.MCMSTimelockProposals, "should have MCMS proposals when using MCMS")
+}
+
+func aptosTestCapabilityID(aptosChainSelector uint64) string {
+	return fmt.Sprintf("aptos:ChainSelector:%d@1.0.0", aptosChainSelector)
+}
+
+func addCapabilityWithModifier(t *testing.T, h *test.Harness) {
+	t.Helper()
+
+	require.NotNil(t, h.Runtime.Environment().Offchain, "Aptos add-capabilities needs JD Offchain client")
+
+	capID := aptosTestCapabilityID(h.AptosSelector)
+	input := changeset.AddCapabilitiesInput{
+		RegistryChainSel:  h.RegistrySelector,
+		RegistryQualifier: test.RegistryQualifier,
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			test.DONName: {{
+				Capability: contracts.Capability{
+					CapabilityID:          capID,
+					ConfigurationContract: common.Address{},
+					Metadata:              newCapMetadata,
+				},
+				Config: maps.Clone(newCapConfig),
+			}},
+		},
+		Force: true,
+	}
+
+	err := h.Runtime.Exec(
+		runtime.ChangesetTask(changeset.AddCapabilities{}, input),
+	)
+	require.NoError(t, err)
+}
+
+func requireCapabilityWithModifier(t *testing.T, h *test.Harness) {
+	t.Helper()
+
+	capReg, err := capabilities_registry_v2.NewCapabilitiesRegistry(
+		h.RegistryAddress,
+		h.Runtime.Environment().BlockChains.EVMChains()[h.RegistrySelector].Client,
+	)
+	require.NoError(t, err)
+
+	capID := aptosTestCapabilityID(h.AptosSelector)
+	caps, err := pkg.GetCapabilities(nil, capReg)
+	require.NoError(t, err)
+	var foundCap bool
+	for _, c := range caps {
+		if c.CapabilityId == capID {
+			foundCap = true
+			break
+		}
+	}
+	require.True(t, foundCap, "aptos capability %s should be registered", capID)
+
+	don, err := capReg.GetDONByName(nil, test.DONName)
+	require.NoError(t, err)
+
+	var cfgFound bool
+	for _, cfg := range don.CapabilityConfigurations {
+		if cfg.CapabilityId == capID {
+			got := new(pkg.CapabilityConfig)
+			require.NoError(t, got.UnmarshalProto(cfg.Config))
+			requireAptosSpecP2PTransmitterMap(t, got)
+			cfgFound = true
+			break
+		}
+	}
+	require.True(t, cfgFound, "expected don to have %s capability configuration", capID)
+}
+
+// requireAptosSpecP2PTransmitterMap checks UnmarshalProto output: specConfig (values.v1.Map)
+// contains p2pToTransmitterMap with a non-empty nested map of entries.
+func requireAptosSpecP2PTransmitterMap(t *testing.T, cfg *pkg.CapabilityConfig) {
+	t.Helper()
+	spec, ok := (*cfg)["specConfig"].(map[string]any)
+	require.True(t, ok, "specConfig should be present as object")
+	fields, ok := spec["fields"].(map[string]any)
+	require.True(t, ok, "specConfig should have values.v1.Map fields")
+	const p2pKey = "p2pToTransmitterMap"
+	raw, ok := fields[p2pKey]
+	require.True(t, ok, "specConfig.fields should contain %q", p2pKey)
+	p2pVal, ok := raw.(map[string]any)
+	require.True(t, ok, "%q should be an object", p2pKey)
+	mv, ok := p2pVal["mapValue"].(map[string]any)
+	require.True(t, ok, "%q should be a values map (mapValue)", p2pKey)
+	inner, ok := mv["fields"].(map[string]any)
+	require.True(t, ok, "%q.mapValue should have fields", p2pKey)
+	require.NotEmpty(t, inner, "%q should have at least one peer→transmitter entry", p2pKey)
+}
+
+func TestAddCapabilities_Apply_Modifier(t *testing.T) {
+	h := test.NewTestHarness(t)
+	addCapabilityWithModifier(t, h)
+	requireCapabilityWithModifier(t, h)
+}
+
+func TestAddCapabilities_Apply_WithOCR3Config(t *testing.T) {
+	h := test.NewTestHarness(t)
+	require.NotNil(t, h.Runtime.Environment().Offchain)
+
+	capID := "ocr3-test-cap@1.0.0"
+	ocr3Config := map[string]any{
+		"ocr3Configs": map[string]any{
+			"__default__": map[string]any{
+				"offchainConfig": map[string]any{
+					"uniqueReports":                     true,
+					"deltaProgressMillis":               5000,
+					"deltaResendMillis":                 5000,
+					"deltaInitialMillis":                5000,
+					"deltaRoundMillis":                  2000,
+					"deltaGraceMillis":                  500,
+					"deltaCertifiedCommitRequestMillis": 1000,
+					"deltaStageMillis":                  30000,
+					"maxRoundsPerEpoch":                 10,
+					"transmissionSchedule":              []any{test.TotalNodes + 1}, // +1 for bootstrap
+					"maxDurationQueryMillis":            1000,
+					"maxDurationObservationMillis":      1000,
+					"maxDurationShouldAcceptMillis":     1000,
+					"maxDurationShouldTransmitMillis":   1000,
+					"maxFaultyOracles":                  1,
+				},
+			},
+		},
+	}
+
+	input := changeset.AddCapabilitiesInput{
+		RegistryChainSel:  h.RegistrySelector,
+		RegistryQualifier: test.RegistryQualifier,
+		DonCapabilityConfigs: map[string][]contracts.CapabilityConfig{
+			test.DONName: {{
+				Capability: contracts.Capability{
+					CapabilityID:          capID,
+					ConfigurationContract: common.Address{},
+					Metadata:              newCapMetadata,
+				},
+				Config: ocr3Config,
+			}},
+		},
+		Force: true,
+		FirstOCR3ConfigCapabilities: map[string][]string{
+			test.DONName: {capID},
+		},
+	}
+
+	err := h.Runtime.Exec(
+		runtime.ChangesetTask(changeset.AddCapabilities{}, input),
+	)
+	require.NoError(t, err)
+
+	capReg, err := capabilities_registry_v2.NewCapabilitiesRegistry(
+		h.RegistryAddress,
+		h.Runtime.Environment().BlockChains.EVMChains()[h.RegistrySelector].Client,
+	)
+	require.NoError(t, err)
+
+	don, err := capReg.GetDONByName(nil, test.DONName)
+	require.NoError(t, err)
+
+	var cfgFound bool
+	for _, cfg := range don.CapabilityConfigurations {
+		if cfg.CapabilityId == capID {
+			got := new(pkg.CapabilityConfig)
+			require.NoError(t, got.UnmarshalProto(cfg.Config))
+
+			ocr3Cfgs, ok := (*got)["ocr3Configs"].(map[string]any)
+			require.True(t, ok, "ocr3Configs should be present")
+			defaultCfg, ok := ocr3Cfgs["__default__"].(map[string]any)
+			require.True(t, ok, "__default__ should be present")
+
+			_, hasSigners := defaultCfg["signers"]
+			assert.True(t, hasSigners, "expanded config should have signers")
+			_, hasTransmitters := defaultCfg["transmitters"]
+			assert.True(t, hasTransmitters, "expanded config should have transmitters")
+
+			offchainCfg, ok := defaultCfg["offchainConfig"].(string)
+			require.True(t, ok, "offchainConfig should be a base64 string after expansion")
+			assert.NotEmpty(t, offchainCfg)
+
+			cfgFound = true
+			break
+		}
+	}
+	require.True(t, cfgFound, "expected don to have %s capability configuration with expanded OCR3 config", capID)
+}

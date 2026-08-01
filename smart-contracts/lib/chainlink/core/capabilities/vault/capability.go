@@ -1,0 +1,343 @@
+package vault
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	"github.com/smartcontractkit/chainlink-common/pkg/capabilities"
+	vaultcommon "github.com/smartcontractkit/chainlink-common/pkg/capabilities/actions/vault"
+	"github.com/smartcontractkit/chainlink-common/pkg/capabilities/consensus/requests"
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
+	"github.com/smartcontractkit/chainlink-common/pkg/settings/limits"
+	"github.com/smartcontractkit/chainlink-common/pkg/types/core"
+	"github.com/smartcontractkit/chainlink/v2/core/capabilities/vault/vaulttypes"
+	"github.com/smartcontractkit/chainlink/v2/core/capabilities/vault/vaultutils"
+)
+
+var _ capabilities.ExecutableCapability = (*Capability)(nil)
+
+type Capability struct {
+	lggr                 logger.Logger
+	clock                clockwork.Clock
+	expiresAfter         time.Duration
+	handler              *requests.Handler[*vaulttypes.Request, *vaulttypes.Response]
+	capabilitiesRegistry core.CapabilitiesRegistry
+	publicKey            *LazyPublicKey
+	lifecycle            *RequestLifecycleTracker
+	zoneBRestrictor      *zoneBRestrictor
+	*RequestValidator
+}
+
+func (s *Capability) Start(ctx context.Context) error {
+	if err := s.handler.Start(ctx); err != nil {
+		return fmt.Errorf("error starting vault DON request handler: %w", err)
+	}
+
+	closeHandler := func() {
+		ierr := s.handler.Close()
+		if ierr != nil {
+			s.lggr.Errorw("error closing vault DON request handler after failed registration", "err", ierr)
+		}
+	}
+
+	err := s.capabilitiesRegistry.Add(ctx, s)
+	if err != nil {
+		closeHandler()
+		return fmt.Errorf("error registering vault capability: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Capability) Close() error {
+	err := s.capabilitiesRegistry.Remove(context.Background(), vaultcommon.CapabilityID)
+	if err != nil {
+		err = fmt.Errorf("error unregistering vault capability: %w", err)
+	}
+
+	ierr := s.handler.Close()
+	if ierr != nil {
+		err = errors.Join(err, fmt.Errorf("error closing vault DON request handler: %w", ierr))
+	}
+
+	if lerr := s.RequestValidator.Close(); lerr != nil {
+		err = errors.Join(err, fmt.Errorf("error closing request validator: %w", lerr))
+	}
+
+	if lerr := s.zoneBRestrictor.close(); lerr != nil {
+		err = errors.Join(err, lerr)
+	}
+
+	return err
+}
+
+func (s *Capability) Info(_ context.Context) (capabilities.CapabilityInfo, error) {
+	return capabilities.NewCapabilityInfo(vaultcommon.CapabilityID, capabilities.CapabilityTypeAction, "Vault Capability")
+}
+
+func (s *Capability) RegisterToWorkflow(_ context.Context, _ capabilities.RegisterToWorkflowRequest) error {
+	// Left unimplemented as this method will never be called
+	// for this capability
+	return nil
+}
+
+func (s *Capability) UnregisterFromWorkflow(_ context.Context, _ capabilities.UnregisterFromWorkflowRequest) error {
+	// Left unimplemented as this method will never be called
+	// for this capability
+	return nil
+}
+
+func (s *Capability) Execute(ctx context.Context, request capabilities.CapabilityRequest) (capabilities.CapabilityResponse, error) {
+	ctx = request.Metadata.ContextWithCRE(ctx)
+	if request.Payload == nil {
+		return capabilities.CapabilityResponse{}, errors.New("capability does not support v1 requests")
+	}
+
+	if request.Method != vaulttypes.MethodSecretsGet {
+		return capabilities.CapabilityResponse{}, errors.New("unsupported method: can only call GetSecrets via capability interface")
+	}
+
+	// Reject GetSecrets reads from a restricted zone-b workflow DON before the
+	// request enters the OCR queue, so non-allowlisted owners get a deterministic
+	// rejection and zone-a / gateway paths are unaffected.
+	if err := s.zoneBRestrictor.enforce(ctx, request.Metadata.WorkflowDonID); err != nil {
+		return capabilities.CapabilityResponse{}, err
+	}
+
+	r := &vaultcommon.GetSecretsRequest{}
+	err := request.Payload.UnmarshalTo(r)
+	if err != nil {
+		return capabilities.CapabilityResponse{}, fmt.Errorf("could not unmarshal payload to GetSecretsRequest: %w", err)
+	}
+
+	err = s.ValidateGetSecretsRequest(ctx, r)
+	if err != nil {
+		return capabilities.CapabilityResponse{}, fmt.Errorf("could not validate get secrets request: %w", err)
+	}
+
+	for idx, req := range r.Requests {
+		if req == nil { // defensive: protobuf strips nil elements, but guard against in-process callers
+			s.lggr.Errorw("get secrets request contains nil secret request", "index", idx)
+			return capabilities.CapabilityResponse{}, fmt.Errorf("nil secret request at index %d", idx)
+		}
+		if req.Id != nil && vaultutils.NormalizeOwner(req.Id.Owner) != vaultutils.NormalizeOwner(request.Metadata.WorkflowOwner) {
+			s.lggr.Errorw("get secrets request owner mismatch", "index", idx, "secretOwner", req.Id.Owner, "workflowOwner", request.Metadata.WorkflowOwner)
+			return capabilities.CapabilityResponse{}, fmt.Errorf("secret identifier owner %q does not match workflow owner %q at index %d", req.Id.Owner, request.Metadata.WorkflowOwner, idx)
+		}
+	}
+
+	md := request.Metadata
+	id := vaultutils.BuildWorkflowGetSecretsRequestID(md)
+	s.lggr.Debugw("received workflow get secrets request", "requestID", id, "request", r.String())
+
+	resp, err := s.handleRequest(ctx, id, r)
+	if err != nil {
+		return capabilities.CapabilityResponse{}, err
+	}
+
+	// Note: we can drop the signatures from the response above here
+	// since only a valid report will be successfully decryptable by the workflow DON.
+	respPB := &vaultcommon.GetSecretsResponse{}
+	err = proto.Unmarshal(resp.Payload, respPB)
+	if err != nil {
+		return capabilities.CapabilityResponse{}, fmt.Errorf("could not unmarshal response to GetSecretsResponse: %w", err)
+	}
+
+	anyProto, err := anypb.New(respPB)
+	if err != nil {
+		return capabilities.CapabilityResponse{}, fmt.Errorf("could not marshal response to anypb: %w", err)
+	}
+
+	return capabilities.CapabilityResponse{
+		Payload: anyProto,
+	}, nil
+}
+
+func (s *Capability) CreateSecrets(ctx context.Context, request *vaultcommon.CreateSecretsRequest) (*vaulttypes.Response, error) {
+	s.lggr.Debugw("received create secrets request", "requestID", request.RequestId, "request", request.String())
+	if err := validateEncryptedSecretsUniformOwners(request.EncryptedSecrets); err != nil {
+		return nil, err
+	}
+	err := s.ValidateCreateSecretsRequest(ctx, s.publicKey.Get(), request, false)
+	if err != nil {
+		s.lggr.Debugw("failed validation checks", "requestID", request.RequestId, "err", err)
+		return nil, err
+	}
+	return s.handleRequest(ctx, request.RequestId, request)
+}
+
+func (s *Capability) UpdateSecrets(ctx context.Context, request *vaultcommon.UpdateSecretsRequest) (*vaulttypes.Response, error) {
+	s.lggr.Debugw("received update secrets request", "requestID", request.RequestId, "request", request.String())
+	if err := validateEncryptedSecretsUniformOwners(request.EncryptedSecrets); err != nil {
+		return nil, err
+	}
+	err := s.ValidateUpdateSecretsRequest(ctx, s.publicKey.Get(), request, false)
+	if err != nil {
+		s.lggr.Debugw("failed validation checks", "requestID", request.RequestId, "err", err)
+		return nil, err
+	}
+	return s.handleRequest(ctx, request.RequestId, request)
+}
+
+func (s *Capability) DeleteSecrets(ctx context.Context, request *vaultcommon.DeleteSecretsRequest) (*vaulttypes.Response, error) {
+	s.lggr.Debugw("received delete secrets request", "requestID", request.RequestId, "request", request.String())
+	err := s.ValidateDeleteSecretsRequest(ctx, request)
+	if err != nil {
+		s.lggr.Debugw("failed validation checks", "requestID", request.RequestId, "request", request.String(), "err", err)
+		return nil, err
+	}
+	if err := validateSecretIdentifiersUniformOwners(request.Ids); err != nil {
+		s.lggr.Debugw("failed uniform owner checks", "requestID", request.RequestId, "request", request.String(), "err", err)
+		return nil, err
+	}
+	return s.handleRequest(ctx, request.RequestId, request)
+}
+
+func (s *Capability) GetSecrets(ctx context.Context, requestID string, request *vaultcommon.GetSecretsRequest) (*vaulttypes.Response, error) {
+	s.lggr.Debugw("received get secrets request", "requestID", requestID, "request", request.String())
+	if err := s.ValidateGetSecretsRequest(ctx, request); err != nil {
+		s.lggr.Debugw("failed validation checks", "requestID", requestID, "request", request.String(), "err", err)
+		return nil, err
+	}
+
+	// No auth needed, as this method is not exposed externally
+	return s.handleRequest(ctx, requestID, request)
+}
+
+func (s *Capability) ListSecretIdentifiers(ctx context.Context, request *vaultcommon.ListSecretIdentifiersRequest) (*vaulttypes.Response, error) {
+	s.lggr.Debugw("received list secret identifiers request", "requestID", request.RequestId, "request", request.String())
+	err := s.ValidateListSecretIdentifiersRequest(ctx, request)
+	if err != nil {
+		s.lggr.Debugw("failed validation checks", "requestID", request.RequestId, "request", request.String(), "err", err)
+		return nil, err
+	}
+	return s.handleRequest(ctx, request.RequestId, request)
+}
+
+func (s *Capability) GetPublicKey(ctx context.Context, request *vaultcommon.GetPublicKeyRequest) (*vaultcommon.GetPublicKeyResponse, error) {
+	l := logger.With(s.lggr, "method", "GetPublicKey")
+	l.Debug("received get public key request")
+
+	pubKey := s.publicKey.Get()
+	if pubKey == nil {
+		l.Debug("could not get public key: is the plugin initialized?")
+		return nil, errors.New("could not get public key: is the plugin initialized?")
+	}
+
+	pkb, err := pubKey.Marshal()
+	if err != nil {
+		l.Debugw("could not marshal public key", "err", err)
+		return nil, fmt.Errorf("could not marshal public key: %w", err)
+	}
+
+	return &vaultcommon.GetPublicKeyResponse{
+		PublicKey: hex.EncodeToString(pkb),
+	}, nil
+}
+
+func validateEncryptedSecretsUniformOwners(encryptedSecrets []*vaultcommon.EncryptedSecret) error {
+	var owner string
+	for idx, enc := range encryptedSecrets {
+		if enc == nil || enc.Id == nil {
+			continue
+		}
+		if owner == "" {
+			owner = enc.Id.Owner
+			continue
+		}
+		if vaultutils.NormalizeOwner(enc.Id.Owner) != vaultutils.NormalizeOwner(owner) {
+			return fmt.Errorf("encrypted secret owner at index %d %q does not match batch owner %q", idx, enc.Id.Owner, owner)
+		}
+	}
+	return nil
+}
+
+func validateSecretIdentifiersUniformOwners(ids []*vaultcommon.SecretIdentifier) error {
+	var owner string
+	for idx, id := range ids {
+		if id == nil {
+			continue
+		}
+		if owner == "" {
+			owner = id.Owner
+			continue
+		}
+		if vaultutils.NormalizeOwner(id.Owner) != vaultutils.NormalizeOwner(owner) {
+			return fmt.Errorf("secret identifier owner at index %d %q does not match batch owner %q", idx, id.Owner, owner)
+		}
+	}
+	return nil
+}
+
+func (s *Capability) handleRequest(ctx context.Context, requestID string, request proto.Message) (*vaulttypes.Response, error) {
+	s.lifecycle.RecordReceived(ctx, requestID, s.clock.Now())
+	respCh := make(chan *vaulttypes.Response, 1)
+	s.handler.SendRequest(ctx, &vaulttypes.Request{
+		Payload:      request,
+		ResponseChan: respCh,
+
+		ExpiryTimeVal: s.clock.Now().Add(s.expiresAfter),
+		IDVal:         requestID,
+	})
+	s.lggr.Debugw("sent request to OCR handler", "requestID", requestID)
+	select {
+	case <-ctx.Done():
+		s.lggr.Debugw("request timed out", "requestID", requestID, "error", ctx.Err())
+		s.lifecycle.FinalizeTimeout(ctx, requestID)
+		return nil, ctx.Err()
+	case resp := <-respCh:
+		s.lggr.Debugw("received response for request", "requestID", requestID, "error", resp.Error)
+		respAt := s.clock.Now()
+		if resp.Error != "" {
+			s.lifecycle.FinalizeResponseError(ctx, requestID, respAt, resp.Error)
+			return nil, fmt.Errorf("error processing request %s: %w", requestID, errors.New(resp.Error))
+		}
+
+		s.lifecycle.FinalizeSuccess(ctx, requestID, respAt)
+		return resp, nil
+	}
+}
+
+func NewCapability(
+	lggr logger.Logger,
+	clock clockwork.Clock,
+	expiresAfter time.Duration,
+	handler *requests.Handler[*vaulttypes.Request, *vaulttypes.Response],
+	capabilitiesRegistry core.CapabilitiesRegistry,
+	publicKey *LazyPublicKey,
+	limitsFactory limits.Factory,
+	lifecycle *RequestLifecycleTracker,
+) (*Capability, error) {
+	if lifecycle == nil {
+		return nil, errors.New("vault capability requires a non-nil request lifecycle tracker")
+	}
+	requestValidator, err := NewRequestValidatorFromLimitsFactory(limitsFactory)
+	if err != nil {
+		return nil, err
+	}
+	zoneBRestrictor, err := newZoneBRestrictor(lggr, limitsFactory, capabilitiesRegistry)
+	if err != nil {
+		return nil, err
+	}
+	if zoneBRestrictor == nil {
+		return nil, errors.New("vault capability requires a non-nil zone-b restrictor")
+	}
+	return &Capability{
+		lggr:                 logger.Named(lggr, "VaultCapability"),
+		clock:                clock,
+		expiresAfter:         expiresAfter,
+		handler:              handler,
+		capabilitiesRegistry: capabilitiesRegistry,
+		publicKey:            publicKey,
+		lifecycle:            lifecycle,
+		zoneBRestrictor:      zoneBRestrictor,
+		RequestValidator:     requestValidator,
+	}, nil
+}

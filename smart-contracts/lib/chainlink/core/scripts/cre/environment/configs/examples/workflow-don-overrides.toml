@@ -1,0 +1,91 @@
+
+[chip_router]
+  image = "local-cre-chip-router:v1.0.1"
+
+[[blockchains]]
+  type = "anvil"
+  chain_id = "1337"
+  container_name = "anvil-1337"
+  docker_cmd_params = ["-b", "0.5", "--mixed-mining"]
+
+[[blockchains]]
+  type = "anvil"
+  chain_id = "2337"
+  container_name = "anvil-2337"
+  port = "8546"
+  docker_cmd_params = ["-b", "0.5", "--mixed-mining"]
+
+[jd]
+  # change to your version
+  csa_encryption_key = "d1093c0060d50a3c89c189b2e485da5a3ce57f3dcb38ab7e2c0d5f0bb2314a44" # any random 32 byte hex string
+  image = "job-distributor:0.28.0"
+
+[fake]
+  port = 8171
+
+[infra]
+  type = "docker"
+
+[[nodesets]]
+  nodes = 5
+  name = "workflow"
+  don_family = "test-don-family"
+  don_types = ["workflow"]
+  override_mode = "all"
+  http_port_range_start = 10100
+
+  env_vars = { CL_EVM_CMD = "", OTEL_SERVICE_NAME = "chainlink-node" }
+  capabilities = ["vault", "evm-2337"]
+
+  # Capability config overrides for this DON.
+  # IMPORTANT: When you override a capability config, you must provide ALL values
+  # for that capability - partial overrides are not supported. If you specify a key,
+  # the entire CapabilityConfig is used as-is without merging with defaults.
+  # Defaults are only used for capabilities you don't configure at all.
+  [nodesets.capability_configs]
+
+    # Chain-specific evm override example
+    [nodesets.capability_configs.evm-1337.values]
+       LogTriggerPollInterval = 2500000000  # 2.5s in nanoseconds
+
+# [nodesets.capability_configs.http-action]
+#    binary_name = "http_action"
+#    [nodesets.capability_configs.http-action.values]
+#       IncomingGlobalBurst = 20
+
+  [nodesets.db]
+    image = "postgres:12.0"
+    port = 13000
+
+  [[nodesets.node_specs]]
+    roles = ["plugin"]            # all nodes in the DON will have 'plugin' role, because "override_mode" = "all"
+    [nodesets.node_specs.node]
+      #docker_ctx = "../../../.."
+      #docker_file = "core/chainlink.Dockerfile"
+      image = "chainlink-tmp:latest"
+      user_config_overrides = """
+      [Log]
+      Level = 'debug'
+      JSONConsole = true
+
+      [Telemetry]
+      Enabled = true
+      # assumes that CTF's observability stack is running on the local host
+      # 4317 is OTEL ingress port of the stack (LGTM)
+      # command: ctf obs up
+      Endpoint = 'host.docker.internal:4317'
+      # default service-name and port used by locally running Chip Ingress
+      # command: go run . env chip-ingress-stack start
+      ChipIngressEndpoint = 'chip-ingress:50051'
+      InsecureConnection = true
+      TraceSampleRatio = 1
+      HeartbeatInterval = '30s'
+
+      # Remove this bit to allow downloading workflows from remote sources
+      [CRE.WorkflowFetcher]
+      URL = "file:///home/chainlink/workflows"
+
+      [Billing]
+      URL = "host.docker.internal:2223"
+      TLSEnabled = false
+      """
