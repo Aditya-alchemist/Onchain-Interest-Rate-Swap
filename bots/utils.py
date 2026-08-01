@@ -1,9 +1,2 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-
-@dataclass
-class BotResult:
-    name: str
-    status: str
+def info(name: str) -> str:
+    return f"{name}: OK"

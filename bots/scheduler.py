@@ -1,9 +1,9 @@
-from apscheduler.schedulers.blocking import BlockingScheduler
+from time import sleep
 
 
 def main() -> None:
-    scheduler = BlockingScheduler()
-    scheduler.start()
+    print("scheduler placeholder")
+    sleep(0.1)
 
 
 if __name__ == "__main__":
