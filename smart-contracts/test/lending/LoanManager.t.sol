@@ -62,8 +62,14 @@ contract LoanManagerTest is Test {
         vm.prank(borrower);
         manager.borrow{value: 2 ether}(5_000e6);
 
-        (uint256 collateralEth, uint256 principalUsdc, , , bool active) =
-            manager.loans(borrower);
+        (
+    uint256 collateralEth,
+    uint256 principalUsdc,
+    ,
+    ,
+    ,
+    bool active
+) = manager.loans(borrower);
 
         assertEq(collateralEth, 2 ether);
         assertEq(principalUsdc, 5_000e6);
@@ -99,7 +105,14 @@ contract LoanManagerTest is Test {
         manager.repay();
         vm.stopPrank();
 
-        (, uint256 principal, , , bool active) = manager.loans(borrower);
+       (
+    ,
+    uint256 principal,
+    ,
+    ,
+    ,
+    bool active
+) = manager.loans(borrower);
 
         assertEq(principal, 0);
         assertFalse(active);
