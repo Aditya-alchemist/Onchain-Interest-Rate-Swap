@@ -8,8 +8,8 @@ import {IERC20} from "../../lib/openzeppelin-contracts/contracts/token/ERC20/IER
 import {LendingPool} from "./LendingPool.sol";
 import {CollateralVault} from "./CollateralVault.sol";
 import {MockPriceOracle} from "../mocks/MockPriceOracle.sol";
+import {InterestMath} from "../libraries/InterestMath.sol";
 
-/// Optional interface so LoanManager can work even if LoanNFT is not deployed yet.
 interface ILoanNFT {
 function mintLoan(
 address borrower,
@@ -18,20 +18,24 @@ uint256 collateralEth,
 uint256 borrowRateBps
 ) external returns (uint256);
 
+
 function burnLoan(uint256 tokenId) external;
+
 
 }
 
+/// @title LoanManager
+/// @notice Creates loans, manages collateral, accrues interest, and coordinates repayments.
 contract LoanManager is Ownable, ReentrancyGuard {
 uint256 public constant BPS = 10_000;
 uint256 public constant COLLATERAL_FACTOR_BPS = 7500; // 75%
+
 
 LendingPool public immutable lendingPool;
 CollateralVault public immutable collateralVault;
 MockPriceOracle public immutable priceOracle;
 IERC20 public immutable usdc;
 
-// Optional module
 ILoanNFT public loanNFT;
 
 struct Loan {
@@ -39,7 +43,7 @@ struct Loan {
     uint256 principalUsdc;
     uint256 borrowRateBps;
     uint256 startTime;
-    uint256 tokenId; // 0 if LoanNFT module is disabled
+    uint256 tokenId;
     bool active;
 }
 
@@ -55,7 +59,8 @@ event LoanOpened(
 
 event LoanRepaid(
     address indexed borrower,
-    uint256 repaidAmount,
+    uint256 principal,
+    uint256 interest,
     uint256 collateralReturned,
     uint256 tokenId
 );
@@ -85,7 +90,6 @@ constructor(
 // Configuration
 // --------------------------------------------------
 
-/// @notice Enable or replace the LoanNFT module later.
 function setLoanNFT(address loanNFTAddress) external onlyOwner {
     loanNFT = ILoanNFT(loanNFTAddress);
     emit LoanNFTUpdated(loanNFTAddress);
@@ -102,7 +106,7 @@ function borrow(uint256 borrowAmountUsdc) external payable nonReentrant {
 
     uint256 ethPrice = priceOracle.getEthPrice(); // 8 decimals
 
-    // Collateral value in USD (8 decimals)
+    // ETH collateral value in USD (8 decimals)
     uint256 collateralValueUsd = (msg.value * ethPrice) / 1e18;
 
     // Convert USD(8 decimals) -> USDC(6 decimals)
@@ -113,13 +117,15 @@ function borrow(uint256 borrowAmountUsdc) external payable nonReentrant {
 
     uint256 rate = lendingPool.currentBorrowRateBps();
 
+    // Lock ETH collateral
     collateralVault.depositFor{value: msg.value}(msg.sender);
 
+    // Issue mUSDC loan
     lendingPool.issueLoan(msg.sender, borrowAmountUsdc);
 
     uint256 tokenId = 0;
 
-    // Mint NFT only if the module has been configured.
+    // Mint NFT if tokenization module is enabled
     if (address(loanNFT) != address(0)) {
         tokenId = loanNFT.mintLoan(
             msg.sender,
@@ -155,22 +161,44 @@ function repay() external nonReentrant {
     Loan storage loan = loans[msg.sender];
     if (!loan.active) revert NoActiveLoan();
 
-    uint256 repayment = loan.principalUsdc;
+    uint256 interest = InterestMath.calculateInterest(
+        loan.principalUsdc,
+        loan.borrowRateBps,
+        loan.startTime,
+        block.timestamp
+    );
 
-    usdc.transferFrom(msg.sender, address(this), repayment);
+    uint256 totalRepayment = loan.principalUsdc + interest;
 
-    usdc.approve(address(lendingPool), repayment);
-    lendingPool.receiveRepayment(address(this), repayment);
+    // Pull repayment from borrower
+    require(
+        usdc.transferFrom(msg.sender, address(this), totalRepayment),
+        "Transfer failed"
+    );
 
+    // Approve pool to pull repayment
+    usdc.approve(address(lendingPool), totalRepayment);
+
+    // Repay the pool
+    lendingPool.receiveRepayment(
+        address(this),
+        msg.sender,
+        loan.principalUsdc,
+        interest
+    );
+
+    // Return ETH collateral
     collateralVault.withdrawTo(msg.sender, loan.collateralEth);
 
+    // Burn NFT if enabled
     if (loan.tokenId != 0 && address(loanNFT) != address(0)) {
         loanNFT.burnLoan(loan.tokenId);
     }
 
     emit LoanRepaid(
         msg.sender,
-        repayment,
+        loan.principalUsdc,
+        interest,
         loan.collateralEth,
         loan.tokenId
     );
