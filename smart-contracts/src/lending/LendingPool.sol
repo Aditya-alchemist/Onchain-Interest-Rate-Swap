@@ -8,133 +8,156 @@ import {ReentrancyGuard} from "../../lib/openzeppelin-contracts/contracts/utils/
 import {InterestRateModel} from "./InterestRateModel.sol";
 import {Governance} from "../governance/Governance.sol";
 
+/// @title LendingPool
+/// @notice Holds lender liquidity and issues loans through LoanManager.
 contract LendingPool is Ownable, ReentrancyGuard {
-    IERC20 public immutable usdc;
-    InterestRateModel public immutable interestRateModel;
-    Governance public immutable governance;
+IERC20 public immutable usdc;
+InterestRateModel public immutable interestRateModel;
+Governance public immutable governance;
 
-    // Total liquidity supplied by lenders
-    uint256 public totalDeposits;
 
-    // Total amount currently borrowed
-    uint256 public totalBorrows;
+// Total liquidity supplied by lenders
+uint256 public totalDeposits;
 
-    // Lender balances
-    mapping(address => uint256) public deposits;
+// Outstanding principal currently borrowed
+uint256 public totalBorrows;
 
-    // LoanManager will be allowed to issue and receive loans
-    address public loanManager;
+// Lender balances (MVP accounting)
+mapping(address => uint256) public deposits;
 
-    event Deposited(address indexed lender, uint256 amount);
-    event Withdrawn(address indexed lender, uint256 amount);
-    event BorrowIssued(address indexed borrower, uint256 amount);
-    event LoanRepaid(address indexed borrower, uint256 amount);
-    event LoanManagerUpdated(address indexed newLoanManager);
+// LoanManager is the only contract allowed to issue and receive loans
+address public loanManager;
 
-    error ZeroAmount();
-    error InsufficientBalance();
-    error InsufficientLiquidity();
-    error Unauthorized();
+event Deposited(address indexed lender, uint256 amount);
+event Withdrawn(address indexed lender, uint256 amount);
+event BorrowIssued(address indexed borrower, uint256 amount);
+event LoanRepaid(
+    address indexed borrower,
+    uint256 principal,
+    uint256 interest
+);
+event LoanManagerUpdated(address indexed newLoanManager);
 
-    constructor(
-        address usdcAddress,
-        address interestModelAddress,
-        address governanceAddress,
-        address initialOwner
-    ) Ownable(initialOwner) {
-        usdc = IERC20(usdcAddress);
-        interestRateModel = InterestRateModel(interestModelAddress);
-        governance = Governance(governanceAddress);
-    }
+error ZeroAmount();
+error InsufficientBalance();
+error InsufficientLiquidity();
+error Unauthorized();
 
-    // ---------- Configuration ----------
+constructor(
+    address usdcAddress,
+    address interestModelAddress,
+    address governanceAddress,
+    address initialOwner
+) Ownable(initialOwner) {
+    usdc = IERC20(usdcAddress);
+    interestRateModel = InterestRateModel(interestModelAddress);
+    governance = Governance(governanceAddress);
+}
 
-    function setLoanManager(address manager) external onlyOwner {
-        loanManager = manager;
-        emit LoanManagerUpdated(manager);
-    }
+// --------------------------------------------------
+// Configuration
+// --------------------------------------------------
 
-    modifier onlyLoanManager() {
-        if (msg.sender != loanManager) revert Unauthorized();
-        _;
-    }
+function setLoanManager(address manager) external onlyOwner {
+    loanManager = manager;
+    emit LoanManagerUpdated(manager);
+}
 
-    // ---------- Lender Functions ----------
+modifier onlyLoanManager() {
+    if (msg.sender != loanManager) revert Unauthorized();
+    _;
+}
 
-    function deposit(uint256 amount) external nonReentrant {
-        if (amount == 0) revert ZeroAmount();
+// --------------------------------------------------
+// Lender Functions
+// --------------------------------------------------
 
-        deposits[msg.sender] += amount;
-        totalDeposits += amount;
+function deposit(uint256 amount) external nonReentrant {
+    if (amount == 0) revert ZeroAmount();
 
-        require(
-            usdc.transferFrom(msg.sender, address(this), amount),
-            "Transfer failed"
+    deposits[msg.sender] += amount;
+    totalDeposits += amount;
+
+    require(
+        usdc.transferFrom(msg.sender, address(this), amount),
+        "Transfer failed"
+    );
+
+    emit Deposited(msg.sender, amount);
+}
+
+function withdraw(uint256 amount) external nonReentrant {
+    if (amount == 0) revert ZeroAmount();
+    if (deposits[msg.sender] < amount) revert InsufficientBalance();
+
+    uint256 liquidity = usdc.balanceOf(address(this));
+    if (liquidity < amount) revert InsufficientLiquidity();
+
+    deposits[msg.sender] -= amount;
+    totalDeposits -= amount;
+
+    require(usdc.transfer(msg.sender, amount), "Transfer failed");
+
+    emit Withdrawn(msg.sender, amount);
+}
+
+// --------------------------------------------------
+// Borrowing (LoanManager Only)
+// --------------------------------------------------
+
+function issueLoan(
+    address borrower,
+    uint256 amount
+) external onlyLoanManager nonReentrant {
+    if (amount == 0) revert ZeroAmount();
+
+    uint256 liquidity = usdc.balanceOf(address(this));
+    if (liquidity < amount) revert InsufficientLiquidity();
+
+    totalBorrows += amount;
+
+    require(usdc.transfer(borrower, amount), "Transfer failed");
+
+    emit BorrowIssued(borrower, amount);
+}
+
+/// @notice Receives repayment from LoanManager.
+/// @dev Principal reduces totalBorrows; interest remains inside the pool as lender yield.
+function receiveRepayment(
+    address payer,
+    address borrower,
+    uint256 principal,
+    uint256 interest
+) external onlyLoanManager nonReentrant {
+    if (principal == 0 && interest == 0) revert ZeroAmount();
+
+    uint256 total = principal + interest;
+
+    require(
+        usdc.transferFrom(payer, address(this), total),
+        "Transfer failed"
+    );
+
+    totalBorrows -= principal;
+
+    emit LoanRepaid(borrower, principal, interest);
+}
+
+// --------------------------------------------------
+// Views
+// --------------------------------------------------
+
+function availableLiquidity() external view returns (uint256) {
+    return usdc.balanceOf(address(this));
+}
+
+function currentBorrowRateBps() external view returns (uint256) {
+    return
+        interestRateModel.getBorrowRate(
+            totalDeposits,
+            totalBorrows
         );
+}
 
-        emit Deposited(msg.sender, amount);
-    }
 
-    function withdraw(uint256 amount) external nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        if (deposits[msg.sender] < amount) revert InsufficientBalance();
-
-        uint256 availableLiquidity = usdc.balanceOf(address(this));
-        if (availableLiquidity < amount) revert InsufficientLiquidity();
-
-        deposits[msg.sender] -= amount;
-        totalDeposits -= amount;
-
-        require(usdc.transfer(msg.sender, amount), "Transfer failed");
-
-        emit Withdrawn(msg.sender, amount);
-    }
-
-    // ---------- Borrowing (LoanManager Only) ----------
-
-    function issueLoan(
-        address borrower,
-        uint256 amount
-    ) external onlyLoanManager nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-
-        uint256 availableLiquidity = usdc.balanceOf(address(this));
-        if (availableLiquidity < amount) revert InsufficientLiquidity();
-
-        totalBorrows += amount;
-
-        require(usdc.transfer(borrower, amount), "Transfer failed");
-
-        emit BorrowIssued(borrower, amount);
-    }
-
-    function receiveRepayment(
-        address borrower,
-        uint256 amount
-    ) external onlyLoanManager nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-
-        require(
-            usdc.transferFrom(borrower, address(this), amount),
-            "Transfer failed"
-        );
-
-        totalBorrows -= amount;
-
-        emit LoanRepaid(borrower, amount);
-    }
-
-    // ---------- Views ----------
-
-    function availableLiquidity() external view returns (uint256) {
-        return usdc.balanceOf(address(this));
-    }
-
-    function currentBorrowRateBps() external view returns (uint256) {
-        return
-            interestRateModel.getBorrowRate(
-                totalDeposits,
-                totalBorrows
-            );
-    }
 }
