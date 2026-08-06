@@ -4,48 +4,54 @@ pragma solidity ^0.8.24;
 import {Ownable} from "../../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
 import {SwapFactory} from "./SwapFactory.sol";
+import {SettlementEngine} from "./SettlementEngine.sol";
 import {SwapMath} from "../libraries/SwapMath.sol";
 import {LendingPool} from "../lending/LendingPool.sol";
+import {DvPEngine} from "../settlement/DvPEngine.sol";
 
 /// @title SwapEngine
-/// @notice Opens and settles interest-rate swaps for HedgeFi.
-/// @dev V1 records settlement amounts but does not transfer funds yet.
+/// @notice Creates swaps, calculates floating-vs-fixed obligations,
+///         records settlements, and triggers atomic DvP settlement.
 contract SwapEngine is Ownable {
 SwapFactory public immutable swapFactory;
+SettlementEngine public immutable settlementEngine;
 LendingPool public immutable lendingPool;
+DvPEngine public immutable dvpEngine;
 
-
-/// @notice Cumulative settlement amount for each swap.
-mapping(uint256 => uint256) public cumulativeSettlement;
 
 event SwapOpened(
     uint256 indexed swapId,
     uint256 indexed loanTokenId
 );
 
-event SwapSettled(
+event SettlementCalculated(
+    uint256 indexed settlementId,
     uint256 indexed swapId,
     uint256 floatingRateBps,
-    uint256 settlementAmount,
-    SwapMath.SettlementDirection direction,
-    uint256 periodSeconds
+    uint256 amountUsdc,
+    SwapMath.SettlementDirection direction
 );
 
 event SwapMatured(uint256 indexed swapId);
 
 constructor(
     address swapFactoryAddress,
+    address settlementEngineAddress,
     address lendingPoolAddress,
+    address dvpEngineAddress,
     address initialOwner
 ) Ownable(initialOwner) {
     swapFactory = SwapFactory(swapFactoryAddress);
+    settlementEngine = SettlementEngine(settlementEngineAddress);
     lendingPool = LendingPool(lendingPoolAddress);
+    dvpEngine = DvPEngine(dvpEngineAddress);
 }
 
 // --------------------------------------------------
-// Open Swap
+// Swap Creation
 // --------------------------------------------------
 
+/// @notice Create a new hedge for a floating-rate loan.
 function openSwap(
     uint256 loanTokenId,
     address borrower,
@@ -71,19 +77,18 @@ function openSwap(
 // Settlement
 // --------------------------------------------------
 
+/// @notice Calculate one settlement period and execute atomic DvP.
 function settleSwap(
     uint256 swapId
-)
-    public
-    returns (
-        uint256 amount,
-        SwapMath.SettlementDirection direction
-    )
-{
+) public returns (uint256 settlementId) {
     SwapFactory.SwapPosition memory position =
         swapFactory.getSwap(swapId);
 
-    require(position.active, "Swap inactive");
+    require(
+        position.status ==
+            SwapFactory.SwapStatus.Active,
+        "Swap inactive"
+    );
 
     uint256 currentTime = block.timestamp;
 
@@ -94,45 +99,60 @@ function settleSwap(
     uint256 periodSeconds =
         currentTime - position.lastSettlementTime;
 
-    if (periodSeconds == 0) {
-        return (
-            0,
-            SwapMath.SettlementDirection.NoPayment
-        );
-    }
+    require(periodSeconds > 0, "Already settled");
 
     uint256 floatingRate =
         lendingPool.currentBorrowRateBps();
 
-    (amount, direction) = SwapMath.netSettlement(
-        position.notionalUsdc,
-        position.fixedRateBps,
-        floatingRate,
-        periodSeconds
+    (
+        uint256 amount,
+        SwapMath.SettlementDirection direction
+    ) = SwapMath.netSettlement(
+            position.notionalUsdc,
+            position.fixedRateBps,
+            floatingRate,
+            periodSeconds
+        );
+
+    settlementId = settlementEngine.recordSettlement(
+        swapId,
+        position.fixedPayer,
+        position.floatingPayer,
+        amount,
+        direction
     );
 
-    cumulativeSettlement[swapId] += amount;
-
-    swapFactory.updateLastSettlementTime(swapId);
-
-    emit SwapSettled(
+    emit SettlementCalculated(
+        settlementId,
         swapId,
         floatingRate,
         amount,
-        direction,
-        periodSeconds
+        direction
+    );
+
+    // Execute atomic DvP only when there is a payment obligation.
+    if (
+        amount > 0 &&
+        direction !=
+        SwapMath.SettlementDirection.NoPayment
+    ) {
+        dvpEngine.executeSettlement(settlementId);
+    }
+
+    swapFactory.updateSettlement(
+        swapId,
+        currentTime
     );
 
     if (currentTime == position.maturityTime) {
+        swapFactory.markMatured(swapId);
         swapFactory.closeSwap(swapId);
+
         emit SwapMatured(swapId);
     }
 }
 
-// --------------------------------------------------
-// Batch Settlement
-// --------------------------------------------------
-
+/// @notice Batch settlement for multiple swaps.
 function settleSwaps(
     uint256[] calldata swapIds
 ) external {
