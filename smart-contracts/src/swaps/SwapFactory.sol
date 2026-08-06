@@ -4,40 +4,43 @@ pragma solidity ^0.8.24;
 import {Ownable} from "../../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
 /// @title SwapFactory
-/// @notice Stores and manages interest-rate swap positions for HedgeFi.
-/// @dev One active swap is allowed per LoanNFT token.
+/// @notice Stores immutable swap terms and lifecycle state for HedgeFi.
+/// @dev Settlement history is handled by SettlementEngine.
 contract SwapFactory is Ownable {
-/// @notice Swap position representing a hedge for a floating-rate loan.
+enum SwapStatus {
+None,
+Active,
+Matured,
+Closed
+}
+
+
 struct SwapPosition {
-uint256 loanTokenId;          // LoanNFT token being hedged
+    uint256 loanTokenId;
 
-    address fixedPayer;           // Pays fixed, receives floating
-    address floatingPayer;        // Pays floating, receives fixed
+    address fixedPayer;
+    address floatingPayer;
 
-    uint256 notionalUsdc;         // Amount being hedged (6 decimals)
-    uint256 fixedRateBps;         // Locked fixed rate (basis points)
+    uint256 notionalUsdc;
+    uint256 fixedRateBps;
 
     uint256 startTime;
     uint256 maturityTime;
 
-    uint256 settlementInterval;   // e.g. 30 days
-    uint256 lastSettlementTime;   // Updated after every settlement
+    uint256 settlementInterval;
+    uint256 lastSettlementTime;
 
-    bool active;
+    SwapStatus status;
 }
 
 uint256 public nextSwapId;
 
-/// @notice swapId => SwapPosition
 mapping(uint256 => SwapPosition) public swaps;
-
-/// @notice loanTokenId => active swapId (0 if none)
 mapping(uint256 => uint256) public loanToSwap;
 
-/// @notice Only SwapEngine may create or close swaps.
 address public swapEngine;
 
-event SwapEngineUpdated(address indexed newSwapEngine);
+event SwapEngineUpdated(address indexed newEngine);
 
 event SwapCreated(
     uint256 indexed swapId,
@@ -49,7 +52,15 @@ event SwapCreated(
     uint256 maturityTime
 );
 
-event SwapClosed(uint256 indexed swapId);
+event SwapSettlementUpdated(
+    uint256 indexed swapId,
+    uint256 settlementTime
+);
+
+event SwapStatusUpdated(
+    uint256 indexed swapId,
+    SwapStatus status
+);
 
 error Unauthorized();
 error InvalidAddress();
@@ -57,8 +68,7 @@ error InvalidNotional();
 error InvalidRate();
 error InvalidMaturity();
 error InvalidSettlementInterval();
-error SwapAlreadyExistsForLoan();
-error SwapNotActive();
+error ActiveSwapExists();
 
 constructor(address initialOwner) Ownable(initialOwner) {}
 
@@ -80,7 +90,7 @@ modifier onlySwapEngine() {
 }
 
 // --------------------------------------------------
-// Swap Creation
+// Swap Lifecycle
 // --------------------------------------------------
 
 function createSwap(
@@ -110,10 +120,13 @@ function createSwap(
         revert InvalidSettlementInterval();
     }
 
-    uint256 existingSwap = loanToSwap[loanTokenId];
+    uint256 existing = loanToSwap[loanTokenId];
 
-    if (existingSwap != 0 && swaps[existingSwap].active) {
-        revert SwapAlreadyExistsForLoan();
+    if (
+        existing != 0 &&
+        swaps[existing].status == SwapStatus.Active
+    ) {
+        revert ActiveSwapExists();
     }
 
     swapId = ++nextSwapId;
@@ -128,7 +141,7 @@ function createSwap(
         maturityTime: maturityTime,
         settlementInterval: settlementInterval,
         lastSettlementTime: block.timestamp,
-        active: true
+        status: SwapStatus.Active
     });
 
     loanToSwap[loanTokenId] = swapId;
@@ -144,33 +157,40 @@ function createSwap(
     );
 }
 
-// --------------------------------------------------
-// Swap Closure
-// --------------------------------------------------
+function updateSettlement(
+    uint256 swapId,
+    uint256 settlementTime
+) external onlySwapEngine {
+    swaps[swapId].lastSettlementTime = settlementTime;
 
-function closeSwap(uint256 swapId) external onlySwapEngine {
-    SwapPosition storage position = swaps[swapId];
-
-    if (!position.active) revert SwapNotActive();
-
-    position.active = false;
-    loanToSwap[position.loanTokenId] = 0;
-
-    emit SwapClosed(swapId);
+    emit SwapSettlementUpdated(
+        swapId,
+        settlementTime
+    );
 }
 
-// --------------------------------------------------
-// Settlement Tracking
-// --------------------------------------------------
-
-function updateLastSettlementTime(
+function markMatured(
     uint256 swapId
 ) external onlySwapEngine {
-    SwapPosition storage position = swaps[swapId];
+    swaps[swapId].status = SwapStatus.Matured;
 
-    if (!position.active) revert SwapNotActive();
+    emit SwapStatusUpdated(
+        swapId,
+        SwapStatus.Matured
+    );
+}
 
-    position.lastSettlementTime = block.timestamp;
+function closeSwap(
+    uint256 swapId
+) external onlySwapEngine {
+    swaps[swapId].status = SwapStatus.Closed;
+
+    loanToSwap[swaps[swapId].loanTokenId] = 0;
+
+    emit SwapStatusUpdated(
+        swapId,
+        SwapStatus.Closed
+    );
 }
 
 // --------------------------------------------------
@@ -194,7 +214,9 @@ function hasActiveSwap(
 ) external view returns (bool) {
     uint256 swapId = loanToSwap[loanTokenId];
 
-    return swapId != 0 && swaps[swapId].active;
+    return
+        swapId != 0 &&
+        swaps[swapId].status == SwapStatus.Active;
 }
 
 
