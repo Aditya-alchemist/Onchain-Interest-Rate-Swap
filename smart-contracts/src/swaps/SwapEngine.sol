@@ -11,6 +11,11 @@ import {DvPEngine} from "../settlement/DvPEngine.sol";
 import {SwapNFT} from "../tokenization/SwapNFT.sol";
 import {PositionRegistry} from "../tokenization/PositionRegistry.sol";
 
+/// Minimal interface for LoanNFT ownership verification
+interface ILoanNFT {
+function ownerOf(uint256 tokenId) external view returns (address);
+}
+
 /// @title SwapEngine
 /// @notice Creates hedges, tokenizes them, records settlements,
 ///         and triggers atomic DvP settlement.
@@ -21,10 +26,14 @@ LendingPool public immutable lendingPool;
 DvPEngine public immutable dvpEngine;
 SwapNFT public immutable swapNFT;
 PositionRegistry public immutable positionRegistry;
+ILoanNFT public immutable loanNFT;
 
 
 // swapId => SwapNFT tokenId
 mapping(uint256 => uint256) public swapToTokenId;
+
+// loanTokenId => swapId
+mapping(uint256 => uint256) public loanToSwapId;
 
 event SwapOpened(
     uint256 indexed swapId,
@@ -40,6 +49,8 @@ event SettlementCalculated(
     SwapMath.SettlementDirection direction
 );
 
+event SwapClosed(uint256 indexed swapId);
+
 event SwapMatured(uint256 indexed swapId);
 
 constructor(
@@ -49,6 +60,7 @@ constructor(
     address dvpEngineAddress,
     address swapNFTAddress,
     address positionRegistryAddress,
+    address loanNFTAddress,
     address initialOwner
 ) Ownable(initialOwner) {
     swapFactory = SwapFactory(swapFactoryAddress);
@@ -57,25 +69,36 @@ constructor(
     dvpEngine = DvPEngine(dvpEngineAddress);
     swapNFT = SwapNFT(swapNFTAddress);
     positionRegistry = PositionRegistry(positionRegistryAddress);
+    loanNFT = ILoanNFT(loanNFTAddress);
 }
 
 // --------------------------------------------------
 // Swap Creation
 // --------------------------------------------------
 
+/// @notice Borrower converts a floating-rate loan into a hedged position.
 function openSwap(
     uint256 loanTokenId,
-    address borrower,
     uint256 notionalUsdc,
     uint256 fixedRateBps,
     uint256 duration,
     uint256 settlementInterval
-) external onlyOwner returns (uint256 swapId) {
+) external returns (uint256 swapId) {
+    require(
+        loanNFT.ownerOf(loanTokenId) == msg.sender,
+        "Not loan owner"
+    );
+
+    require(
+        !positionRegistry.hasActiveHedge(loanTokenId),
+        "Loan already hedged"
+    );
+
     uint256 maturityTime = block.timestamp + duration;
 
     swapId = swapFactory.createSwap(
         loanTokenId,
-        borrower,
+        msg.sender,
         address(this),
         notionalUsdc,
         fixedRateBps,
@@ -84,7 +107,7 @@ function openSwap(
     );
 
     uint256 swapTokenId = swapNFT.mintSwap(
-        borrower,
+        msg.sender,
         swapId,
         loanTokenId,
         notionalUsdc,
@@ -93,6 +116,7 @@ function openSwap(
     );
 
     swapToTokenId[swapId] = swapTokenId;
+    loanToSwapId[loanTokenId] = swapId;
 
     positionRegistry.linkPosition(
         loanTokenId,
@@ -165,7 +189,7 @@ function settleSwap(
     if (
         amount > 0 &&
         direction !=
-        SwapMath.SettlementDirection.NoPayment
+            SwapMath.SettlementDirection.NoPayment
     ) {
         dvpEngine.executeSettlement(settlementId);
     }
@@ -191,7 +215,22 @@ function settleSwaps(
 }
 
 // --------------------------------------------------
-// Closure
+// LoanManager Integration
+// --------------------------------------------------
+
+/// @notice Called by LoanManager when a loan is repaid.
+function closeSwapByLoan(
+    uint256 loanTokenId
+) external onlyOwner {
+    uint256 swapId = loanToSwapId[loanTokenId];
+
+    if (swapId == 0) return;
+
+    _closeSwap(swapId, loanTokenId);
+}
+
+// --------------------------------------------------
+// Internal Closure
 // --------------------------------------------------
 
 function _closeSwap(
@@ -205,13 +244,16 @@ function _closeSwap(
 
     if (swapTokenId != 0) {
         swapNFT.burnSwap(swapTokenId);
+
         positionRegistry.unlinkPosition(
             loanTokenId
         );
 
         delete swapToTokenId[swapId];
+        delete loanToSwapId[loanTokenId];
     }
 
+    emit SwapClosed(swapId);
     emit SwapMatured(swapId);
 }
 
