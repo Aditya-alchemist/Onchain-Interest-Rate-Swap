@@ -9,7 +9,9 @@ import {LendingPool} from "./LendingPool.sol";
 import {CollateralVault} from "./CollateralVault.sol";
 import {MockPriceOracle} from "../mocks/MockPriceOracle.sol";
 import {InterestMath} from "../libraries/InterestMath.sol";
+import {PositionRegistry} from "../tokenization/PositionRegistry.sol";
 
+/// @notice Minimal interface for LoanNFT
 interface ILoanNFT {
 function mintLoan(
 address borrower,
@@ -22,6 +24,11 @@ uint256 borrowRateBps
 function burnLoan(uint256 tokenId) external;
 
 
+}
+
+/// @notice Minimal interface for SwapEngine
+interface ISwapEngine {
+function closeSwapByLoan(uint256 loanTokenId) external;
 }
 
 /// @title LoanManager
@@ -37,6 +44,8 @@ MockPriceOracle public immutable priceOracle;
 IERC20 public immutable usdc;
 
 ILoanNFT public loanNFT;
+PositionRegistry public positionRegistry;
+ISwapEngine public swapEngine;
 
 struct Loan {
     uint256 collateralEth;
@@ -66,6 +75,8 @@ event LoanRepaid(
 );
 
 event LoanNFTUpdated(address indexed loanNFT);
+event PositionRegistryUpdated(address indexed registry);
+event SwapEngineUpdated(address indexed swapEngine);
 
 error LoanAlreadyExists();
 error NoActiveLoan();
@@ -95,6 +106,16 @@ function setLoanNFT(address loanNFTAddress) external onlyOwner {
     emit LoanNFTUpdated(loanNFTAddress);
 }
 
+function setPositionRegistry(address registry) external onlyOwner {
+    positionRegistry = PositionRegistry(registry);
+    emit PositionRegistryUpdated(registry);
+}
+
+function setSwapEngine(address engine) external onlyOwner {
+    swapEngine = ISwapEngine(engine);
+    emit SwapEngineUpdated(engine);
+}
+
 // --------------------------------------------------
 // Borrowing
 // --------------------------------------------------
@@ -109,7 +130,7 @@ function borrow(uint256 borrowAmountUsdc) external payable nonReentrant {
     // ETH collateral value in USD (8 decimals)
     uint256 collateralValueUsd = (msg.value * ethPrice) / 1e18;
 
-    // Convert USD(8 decimals) -> USDC(6 decimals)
+    // Convert USD (8 decimals) -> USDC (6 decimals)
     uint256 maxBorrowUsdc =
         (collateralValueUsd * COLLATERAL_FACTOR_BPS) / BPS / 100;
 
@@ -120,12 +141,12 @@ function borrow(uint256 borrowAmountUsdc) external payable nonReentrant {
     // Lock ETH collateral
     collateralVault.depositFor{value: msg.value}(msg.sender);
 
-    // Issue mUSDC loan
+    // Issue USDC loan
     lendingPool.issueLoan(msg.sender, borrowAmountUsdc);
 
     uint256 tokenId = 0;
 
-    // Mint NFT if tokenization module is enabled
+    // Mint LoanNFT if tokenization module is enabled
     if (address(loanNFT) != address(0)) {
         tokenId = loanNFT.mintLoan(
             msg.sender,
@@ -176,10 +197,10 @@ function repay() external nonReentrant {
         "Transfer failed"
     );
 
-    // Approve pool to pull repayment
+    // Approve LendingPool to pull repayment
     usdc.approve(address(lendingPool), totalRepayment);
 
-    // Repay the pool
+    // Repay principal + interest
     lendingPool.receiveRepayment(
         address(this),
         msg.sender,
@@ -187,10 +208,20 @@ function repay() external nonReentrant {
         interest
     );
 
+    // Automatically close any active hedge attached to this loan
+    if (
+        loan.tokenId != 0 &&
+        address(positionRegistry) != address(0) &&
+        address(swapEngine) != address(0) &&
+        positionRegistry.hasActiveHedge(loan.tokenId)
+    ) {
+        swapEngine.closeSwapByLoan(loan.tokenId);
+    }
+
     // Return ETH collateral
     collateralVault.withdrawTo(msg.sender, loan.collateralEth);
 
-    // Burn NFT if enabled
+    // Burn LoanNFT
     if (loan.tokenId != 0 && address(loanNFT) != address(0)) {
         loanNFT.burnLoan(loan.tokenId);
     }
@@ -216,7 +247,8 @@ function maxBorrowable(
     uint256 ethPrice = priceOracle.getEthPrice();
     uint256 collateralValueUsd = (collateralEth * ethPrice) / 1e18;
 
-    return (collateralValueUsd * COLLATERAL_FACTOR_BPS) / BPS / 100;
+    return
+        (collateralValueUsd * COLLATERAL_FACTOR_BPS) / BPS / 100;
 }
 
 function hasActiveLoan(address borrower) external view returns (bool) {
