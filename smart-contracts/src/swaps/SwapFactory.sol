@@ -38,6 +38,13 @@ uint256 public nextSwapId;
 mapping(uint256 => SwapPosition) public swaps;
 mapping(uint256 => uint256) public loanToSwap;
 
+// --------------------------------------------------
+// Active swap indexing (for keeper bots)
+// --------------------------------------------------
+
+uint256[] private activeSwapIds;
+mapping(uint256 => uint256) private activeSwapIndex;
+
 address public swapEngine;
 
 event SwapEngineUpdated(address indexed newEngine);
@@ -146,6 +153,10 @@ function createSwap(
 
     loanToSwap[loanTokenId] = swapId;
 
+    // Add to active swap index
+    activeSwapIndex[swapId] = activeSwapIds.length;
+    activeSwapIds.push(swapId);
+
     emit SwapCreated(
         swapId,
         loanTokenId,
@@ -187,10 +198,33 @@ function closeSwap(
 
     loanToSwap[swaps[swapId].loanTokenId] = 0;
 
+    _removeActiveSwap(swapId);
+
     emit SwapStatusUpdated(
         swapId,
         SwapStatus.Closed
     );
+}
+
+// --------------------------------------------------
+// Internal
+// --------------------------------------------------
+
+function _removeActiveSwap(
+    uint256 swapId
+) internal {
+    uint256 index = activeSwapIndex[swapId];
+    uint256 lastIndex = activeSwapIds.length - 1;
+
+    if (index != lastIndex) {
+        uint256 lastSwapId = activeSwapIds[lastIndex];
+
+        activeSwapIds[index] = lastSwapId;
+        activeSwapIndex[lastSwapId] = index;
+    }
+
+    activeSwapIds.pop();
+    delete activeSwapIndex[swapId];
 }
 
 // --------------------------------------------------
@@ -217,6 +251,24 @@ function hasActiveSwap(
     return
         swapId != 0 &&
         swaps[swapId].status == SwapStatus.Active;
+}
+
+/// @notice Returns all currently active swap IDs.
+function getActiveSwapIds()
+    external
+    view
+    returns (uint256[] memory)
+{
+    return activeSwapIds;
+}
+
+/// @notice Returns the number of active swaps.
+function activeSwapCount()
+    external
+    view
+    returns (uint256)
+{
+    return activeSwapIds.length;
 }
 
 
