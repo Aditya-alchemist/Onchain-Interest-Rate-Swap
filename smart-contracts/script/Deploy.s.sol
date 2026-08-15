@@ -28,10 +28,10 @@ import {DvPEngine} from "../src/settlement/DvPEngine.sol";
 
 contract Deploy is Script {
 function run() external {
-vm.startBroadcast();
+uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+address deployer = vm.addr(deployerPrivateKey);
 
-
-    address deployer = msg.sender;
+vm.startBroadcast(deployerPrivateKey);
 
     // --------------------------------------------------
     // Core Infrastructure
