@@ -3,37 +3,22 @@
     "type": "constructor",
     "inputs": [
       {
-        "name": "swapFactoryAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "settlementEngineAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "lendingPoolAddress",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "dvpEngineAddress",
+        "name": "collateralVaultAddress",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "swapNFTAddress",
+        "name": "priceOracleAddress",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "positionRegistryAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "loanNFTAddress",
+        "name": "usdcAddress",
         "type": "address",
         "internalType": "address"
       },
@@ -47,26 +32,71 @@
   },
   {
     "type": "function",
-    "name": "closeSwapByLoan",
+    "name": "BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "COLLATERAL_FACTOR_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "borrow",
     "inputs": [
       {
-        "name": "loanTokenId",
+        "name": "borrowAmountUsdc",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "function",
-    "name": "dvpEngine",
+    "name": "collateralVault",
     "inputs": [],
     "outputs": [
       {
         "name": "",
         "type": "address",
-        "internalType": "contract DvPEngine"
+        "internalType": "contract CollateralVault"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hasActiveLoan",
+    "inputs": [
+      {
+        "name": "borrower",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -99,10 +129,54 @@
   },
   {
     "type": "function",
-    "name": "loanToSwapId",
+    "name": "loans",
     "inputs": [
       {
         "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "collateralEth",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "principalUsdc",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "borrowRateBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "startTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "tokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "active",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxBorrowable",
+    "inputs": [
+      {
+        "name": "collateralEth",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -115,45 +189,6 @@
       }
     ],
     "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "openSwap",
-    "inputs": [
-      {
-        "name": "loanTokenId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "notionalUsdc",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "fixedRateBps",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "duration",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "settlementInterval",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "swapId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -183,6 +218,19 @@
   },
   {
     "type": "function",
+    "name": "priceOracle",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract MockPriceOracle"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
@@ -190,31 +238,19 @@
   },
   {
     "type": "function",
-    "name": "settleSwap",
-    "inputs": [
-      {
-        "name": "swapId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "settlementId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
+    "name": "repay",
+    "inputs": [],
+    "outputs": [],
     "stateMutability": "nonpayable"
   },
   {
     "type": "function",
-    "name": "settleSwaps",
+    "name": "setLoanNFT",
     "inputs": [
       {
-        "name": "swapIds",
-        "type": "uint256[]",
-        "internalType": "uint256[]"
+        "name": "loanNFTAddress",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
@@ -222,58 +258,39 @@
   },
   {
     "type": "function",
-    "name": "settlementEngine",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract SettlementEngine"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "swapFactory",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract SwapFactory"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "swapNFT",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract SwapNFT"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "swapToTokenId",
+    "name": "setPositionRegistry",
     "inputs": [
       {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "registry",
+        "type": "address",
+        "internalType": "address"
       }
     ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setSwapEngine",
+    "inputs": [
+      {
+        "name": "engine",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "swapEngine",
+    "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "address",
+        "internalType": "contract ISwapEngine"
       }
     ],
     "stateMutability": "view"
@@ -290,6 +307,106 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "usdc",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "LoanNFTUpdated",
+    "inputs": [
+      {
+        "name": "loanNFT",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LoanOpened",
+    "inputs": [
+      {
+        "name": "borrower",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "collateralEth",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "principalUsdc",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "borrowRateBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "tokenId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LoanRepaid",
+    "inputs": [
+      {
+        "name": "borrower",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "principal",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "interest",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "collateralReturned",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "tokenId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -312,91 +429,44 @@
   },
   {
     "type": "event",
-    "name": "SettlementCalculated",
+    "name": "PositionRegistryUpdated",
     "inputs": [
       {
-        "name": "settlementId",
-        "type": "uint256",
+        "name": "registry",
+        "type": "address",
         "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "swapId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "floatingRateBps",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "amountUsdc",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "direction",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum SwapMath.SettlementDirection"
+        "internalType": "address"
       }
     ],
     "anonymous": false
   },
   {
     "type": "event",
-    "name": "SwapClosed",
+    "name": "SwapEngineUpdated",
     "inputs": [
       {
-        "name": "swapId",
-        "type": "uint256",
+        "name": "swapEngine",
+        "type": "address",
         "indexed": true,
-        "internalType": "uint256"
+        "internalType": "address"
       }
     ],
     "anonymous": false
   },
   {
-    "type": "event",
-    "name": "SwapMatured",
-    "inputs": [
-      {
-        "name": "swapId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
+    "type": "error",
+    "name": "ExceedsBorrowLimit",
+    "inputs": []
   },
   {
-    "type": "event",
-    "name": "SwapOpened",
-    "inputs": [
-      {
-        "name": "swapId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "loanTokenId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "swapTokenId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
+    "type": "error",
+    "name": "LoanAlreadyExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoActiveLoan",
+    "inputs": []
   },
   {
     "type": "error",
@@ -419,5 +489,20 @@
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroBorrow",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroCollateral",
+    "inputs": []
   }
 ]

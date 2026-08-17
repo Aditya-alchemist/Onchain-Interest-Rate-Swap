@@ -1,214 +1,572 @@
 [
   {
-    "inputs": [],
-    "name": "activeSwapCount",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "getActiveSwapIds",
-    "outputs": [
-      {
-        "internalType": "uint256[]",
-        "name": "",
-        "type": "uint256[]"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
+    "type": "constructor",
     "inputs": [
       {
-        "internalType": "uint256",
-        "name": "swapId",
-        "type": "uint256"
+        "name": "initialOwner",
+        "type": "address",
+        "internalType": "address"
       }
     ],
-    "name": "getSwap",
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "activeSwapCount",
+    "inputs": [],
     "outputs": [
       {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "closeSwap",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "createSwap",
+    "inputs": [
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fixedPayer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "floatingPayer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "notionalUsdc",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fixedRateBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maturityTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "settlementInterval",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getActiveSwapIds",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getSwap",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct SwapFactory.SwapPosition",
         "components": [
           {
-            "internalType": "uint256",
             "name": "loanTokenId",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "address",
             "name": "fixedPayer",
-            "type": "address"
+            "type": "address",
+            "internalType": "address"
           },
           {
-            "internalType": "address",
             "name": "floatingPayer",
-            "type": "address"
+            "type": "address",
+            "internalType": "address"
           },
           {
-            "internalType": "uint256",
             "name": "notionalUsdc",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "uint256",
             "name": "fixedRateBps",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "uint256",
             "name": "startTime",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "uint256",
             "name": "maturityTime",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "uint256",
             "name": "settlementInterval",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "uint256",
             "name": "lastSettlementTime",
-            "type": "uint256"
+            "type": "uint256",
+            "internalType": "uint256"
           },
           {
-            "internalType": "uint8",
             "name": "status",
-            "type": "uint8"
+            "type": "uint8",
+            "internalType": "enum SwapFactory.SwapStatus"
           }
-        ],
-        "internalType": "struct SwapFactory.SwapPosition",
-        "name": "",
-        "type": "tuple"
+        ]
       }
     ],
-    "stateMutability": "view",
-    "type": "function"
+    "stateMutability": "view"
   },
   {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "loanTokenId",
-        "type": "uint256"
-      }
-    ],
+    "type": "function",
     "name": "getSwapForLoan",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [
       {
-        "internalType": "uint256",
         "name": "loanTokenId",
-        "type": "uint256"
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "hasActiveSwap",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "nextSwapId",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [
       {
-        "internalType": "uint256",
-        "name": "swapId",
-        "type": "uint256"
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
-    "name": "swaps",
     "outputs": [
       {
-        "internalType": "uint256",
-        "name": "loanTokenId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "fixedPayer",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "floatingPayer",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "notionalUsdc",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "fixedRateBps",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "startTime",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "maturityTime",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "settlementInterval",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "lastSettlementTime",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint8",
-        "name": "status",
-        "type": "uint8"
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
-    "stateMutability": "view",
-    "type": "function"
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "loanToSwap",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "markMatured",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "nextSwapId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "renounceOwnership",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setSwapEngine",
+    "inputs": [
+      {
+        "name": "engine",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "swapEngine",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "swaps",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fixedPayer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "floatingPayer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "notionalUsdc",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fixedRateBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "startTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maturityTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "settlementInterval",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lastSettlementTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "status",
+        "type": "uint8",
+        "internalType": "enum SwapFactory.SwapStatus"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "transferOwnership",
+    "inputs": [
+      {
+        "name": "newOwner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "updateSettlement",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "settlementTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "OwnershipTransferred",
+    "inputs": [
+      {
+        "name": "previousOwner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "newOwner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SwapCreated",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "fixedPayer",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "floatingPayer",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "notionalUsdc",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "fixedRateBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "maturityTime",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SwapEngineUpdated",
+    "inputs": [
+      {
+        "name": "newEngine",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SwapSettlementUpdated",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "settlementTime",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SwapStatusUpdated",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "status",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum SwapFactory.SwapStatus"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "ActiveSwapExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidMaturity",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidNotional",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRate",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSettlementInterval",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OwnableInvalidOwner",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OwnableUnauthorizedAccount",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": []
   }
 ]

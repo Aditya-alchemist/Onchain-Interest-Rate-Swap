@@ -3,21 +3,6 @@
     "type": "constructor",
     "inputs": [
       {
-        "name": "usdcAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "interestModelAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "governanceAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "initialOwner",
         "type": "address",
         "internalType": "address"
@@ -27,51 +12,12 @@
   },
   {
     "type": "function",
-    "name": "availableLiquidity",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "currentBorrowRateBps",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "deposit",
+    "name": "getLoanTokenId",
     "inputs": [
       {
-        "name": "amount",
+        "name": "swapTokenId",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "deposits",
-    "inputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
       }
     ],
     "outputs": [
@@ -85,41 +31,89 @@
   },
   {
     "type": "function",
-    "name": "governance",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract Governance"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "interestRateModel",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract InterestRateModel"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "issueLoan",
+    "name": "getPosition",
     "inputs": [
       {
-        "name": "borrower",
-        "type": "address",
-        "internalType": "address"
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct PositionRegistry.PositionLink",
+        "components": [
+          {
+            "name": "loanTokenId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "swapTokenId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "active",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getSwapTokenId",
+    "inputs": [
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hasActiveHedge",
+    "inputs": [
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "linkPosition",
+    "inputs": [
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
       },
       {
-        "name": "amount",
+        "name": "swapTokenId",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -155,34 +149,6 @@
   },
   {
     "type": "function",
-    "name": "receiveRepayment",
-    "inputs": [
-      {
-        "name": "payer",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "borrower",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "principal",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "interest",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
@@ -203,26 +169,26 @@
   },
   {
     "type": "function",
-    "name": "totalBorrows",
-    "inputs": [],
-    "outputs": [
+    "name": "setSwapEngine",
+    "inputs": [
       {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "engine",
+        "type": "address",
+        "internalType": "address"
       }
     ],
-    "stateMutability": "view"
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
-    "name": "totalDeposits",
+    "name": "swapEngine",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -242,67 +208,16 @@
   },
   {
     "type": "function",
-    "name": "usdc",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IERC20"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "withdraw",
+    "name": "unlinkPosition",
     "inputs": [
       {
-        "name": "amount",
+        "name": "loanTokenId",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "event",
-    "name": "BorrowIssued",
-    "inputs": [
-      {
-        "name": "borrower",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "Deposited",
-    "inputs": [
-      {
-        "name": "lender",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
   },
   {
     "type": "event",
@@ -313,31 +228,6 @@
         "type": "address",
         "indexed": true,
         "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "LoanRepaid",
-    "inputs": [
-      {
-        "name": "borrower",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "principal",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "interest",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -363,32 +253,54 @@
   },
   {
     "type": "event",
-    "name": "Withdrawn",
+    "name": "PositionLinked",
     "inputs": [
       {
-        "name": "lender",
-        "type": "address",
+        "name": "loanTokenId",
+        "type": "uint256",
         "indexed": true,
-        "internalType": "address"
+        "internalType": "uint256"
       },
       {
-        "name": "amount",
+        "name": "swapTokenId",
         "type": "uint256",
-        "indexed": false,
+        "indexed": true,
         "internalType": "uint256"
       }
     ],
     "anonymous": false
   },
   {
-    "type": "error",
-    "name": "InsufficientBalance",
-    "inputs": []
+    "type": "event",
+    "name": "PositionUnlinked",
+    "inputs": [
+      {
+        "name": "loanTokenId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "swapTokenId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
   },
   {
-    "type": "error",
-    "name": "InsufficientLiquidity",
-    "inputs": []
+    "type": "event",
+    "name": "SwapEngineUpdated",
+    "inputs": [
+      {
+        "name": "newSwapEngine",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "error",
@@ -414,17 +326,17 @@
   },
   {
     "type": "error",
-    "name": "ReentrancyGuardReentrantCall",
+    "name": "PositionAlreadyLinked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PositionNotLinked",
     "inputs": []
   },
   {
     "type": "error",
     "name": "Unauthorized",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ZeroAmount",
     "inputs": []
   }
 ]

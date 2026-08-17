@@ -3,21 +3,6 @@
     "type": "constructor",
     "inputs": [
       {
-        "name": "settlementEngineAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "nettingEngineAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "escrowManagerAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "initialOwner",
         "type": "address",
         "internalType": "address"
@@ -27,39 +12,32 @@
   },
   {
     "type": "function",
-    "name": "escrowManager",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract EscrowManager"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "executeSettlement",
+    "name": "depositFor",
     "inputs": [
       {
-        "name": "settlementId",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "borrower",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "function",
-    "name": "nettingEngine",
-    "inputs": [],
+    "name": "getCollateral",
+    "inputs": [
+      {
+        "name": "borrower",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [
       {
         "name": "",
-        "type": "address",
-        "internalType": "contract NettingEngine"
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -86,39 +64,13 @@
   },
   {
     "type": "function",
-    "name": "setSwapEngine",
-    "inputs": [
-      {
-        "name": "newSwapEngine",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "settlementEngine",
+    "name": "totalCollateral",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "address",
-        "internalType": "contract SettlementEngine"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "swapEngine",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -137,35 +89,54 @@
     "stateMutability": "nonpayable"
   },
   {
-    "type": "event",
-    "name": "AtomicSettlementExecuted",
+    "type": "function",
+    "name": "withdrawTo",
     "inputs": [
       {
-        "name": "settlementId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
+        "name": "borrower",
+        "type": "address",
+        "internalType": "address"
       },
       {
-        "name": "swapId",
+        "name": "amount",
         "type": "uint256",
-        "indexed": true,
         "internalType": "uint256"
-      },
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "CollateralDeposited",
+    "inputs": [
       {
-        "name": "payer",
+        "name": "borrower",
         "type": "address",
         "indexed": true,
         "internalType": "address"
       },
       {
-        "name": "payee",
-        "type": "address",
+        "name": "amount",
+        "type": "uint256",
         "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CollateralWithdrawn",
+    "inputs": [
+      {
+        "name": "borrower",
+        "type": "address",
+        "indexed": true,
         "internalType": "address"
       },
       {
-        "name": "amountUsdc",
+        "name": "amount",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -193,27 +164,8 @@
     "anonymous": false
   },
   {
-    "type": "event",
-    "name": "SwapEngineUpdated",
-    "inputs": [
-      {
-        "name": "oldSwapEngine",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "newSwapEngine",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
     "type": "error",
-    "name": "InvalidSwapEngine",
+    "name": "InsufficientCollateral",
     "inputs": []
   },
   {
@@ -240,13 +192,12 @@
   },
   {
     "type": "error",
-    "name": "UnauthorizedCaller",
-    "inputs": [
-      {
-        "name": "caller",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAmount",
+    "inputs": []
   }
 ]
