@@ -1,19 +1,54 @@
- ================ HedgeFi Deployment ================
-  Deployer: 0x203FAeA73e70013562886670BD30985e9D5873d6
-  MockUSDC: 0xd9ee46aaB8B5D1CfFcD021a7cd0BA946E20742E7
-  MockPriceOracle: 0x95cbC87e8bfd7DDdbf54a1A79a32F9F580c32a70
-  Governance: 0x72b0c69cfc0C0Fc0D3dE2B94e9f945E7279749B6
-  InterestRateModel: 0x387EA29c3412De4d1cdDE7a3a0Dbc197f51890f4
-  CollateralVault: 0x8c8119429C86e5A7E7E667ec052d730d37EC6939
-  LendingPool: 0xe7B02Fd8037a611C3553DDD3a2c9F1f3Be812A83
-  LoanManager: 0xC64bf7CbbB5E5e4E22840E82f477eCC89126616d
-  LoanNFT: 0x11B8b25670b6230BF354039c4DB0dA8529Da3C1f
-  PositionRegistry: 0x09D5C87949d86A55bFaA83AFD29B7435eD1b574F
-  SwapFactory: 0xB30Bbe3b5E5cDc9Cf07c218833F058c259c65C2f
-  SwapNFT: 0x17c07B7e707FCe707BbC014DC0d33d3A86828E1e
-  SettlementEngine: 0xF4Dbb83F831E80Fe10A91c7AA671770d425B08C6
-  NettingEngine: 0x0F71c2D87E82738dF32065AbfA36A5D40d496509
-  EscrowManager: 0x48AbDf6A8D3Deb12A6Add72092B301b23c625663
-  DvPEngine: 0xcd180Aa07D7262Af1955eCa0d3B6648732c74d6a
-  SwapEngine: 0x1D90Cf3F44A0Cd26286734702fc70B2Ba14507bC
-  ====================================================
+=================================================
+               HedgeFi Deployment
+  =================================================
+  Deployer:
+  0x203FAeA73e70013562886670BD30985e9D5873d6
+  
+  
+  =================================================
+            HedgeFi Deployment Complete
+  =================================================
+  Deployer:
+  0x203FAeA73e70013562886670BD30985e9D5873d6
+  
+  --------------- CORE ----------------
+  MockUSDC:
+  0xE2A3ed311d6D7076172aB22Bb47ce4Bbf1259ADD
+  MockPriceOracle:
+  0x04858EcB477Fb7f8c20E1DbD0c226a62767b999e
+  Governance:
+  0xbaF87991615dE1E2911A691c1f4B4883BCAd5148
+  InterestRateModel:
+  0x496B2771053b1143EaB4Cefa6EDe94da22625C65
+  
+  --------------- LENDING ---------------
+  CollateralVault:
+  0xf028Cd99727aFfD27fc27FEC3799723b603F8690
+  LendingPool:
+  0x2B6932aa12ccD2889386B5640b37FB5e9517e4c4
+  LoanManager:
+  0x3353A130bC3ae6797a253568ec755518Dec6024b
+  LoanNFT:
+  0xAE45584Ad15Cb1d5eE6AcfDed5f063B6232bb56E
+  
+  --------------- TOKENIZATION ---------------
+  PositionRegistry:
+  0x7e3A0b5dCb1e22b602546ECc3d5e39029e4Ec7e2
+  SwapNFT:
+  0x39840C0B1fCC3a4597547e8a2000fb9963Cd18eF
+  
+  --------------- SWAPS ---------------
+  SwapFactory:
+  0x9F9e18A62d2b25f577721D028F4fa33c173d71ef
+  SwapEngine:
+  0xd5955F6C0F07Af02dAb8BAE1FF8d91881C4008b8
+  SettlementEngine:
+  0xBe9012856986bac17FF976F4CBfF3c005aA4FdB2
+  NettingEngine:
+  0x6e290875Ff9CF5158A38bfec04F2a535Fd7125F5
+  
+  --------------- SETTLEMENT ---------------
+  EscrowManager:
+  0x7AfF47DB7CDe2Fdfe68B3AaC8a1F259B66b86B57
+  DvPEngine:
+  0x0Cd649f67f350D3bf09a7E87118E0043b8dDcF46
