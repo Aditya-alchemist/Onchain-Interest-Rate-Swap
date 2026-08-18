@@ -1,7 +1,10 @@
 import os
+
 from dotenv import load_dotenv
 
+
 load_dotenv()
+
 
 # ============================================================
 # NETWORK
@@ -46,14 +49,21 @@ NETTING_ENGINE_ADDRESS = os.getenv(
     "NETTING_ENGINE"
 )
 
-DVP_ENGINE_ADDRESS = os.getenv("DVP_ENGINE")
-
 ESCROW_MANAGER_ADDRESS = os.getenv(
     "ESCROW_MANAGER"
 )
 
 DVP_ENGINE_ADDRESS = os.getenv(
     "DVP_ENGINE"
+)
+
+
+# ============================================================
+# LIQUIDATION
+# ============================================================
+
+LIQUIDATION_ENGINE_ADDRESS = os.getenv(
+    "LIQUIDATION_ENGINE"
 )
 
 
@@ -76,26 +86,34 @@ DRY_RUN = (
 # ============================================================
 
 required = {
+
+    # Network
     "SEPOLIA_RPC_URL": SEPOLIA_RPC_URL,
     "PRIVATE_KEY": PRIVATE_KEY,
 
     # Core
     "SWAP_FACTORY": SWAP_FACTORY_ADDRESS,
     "SWAP_ENGINE": SWAP_ENGINE_ADDRESS,
+
     "LENDING_POOL": LENDING_POOL_ADDRESS,
     "PRICE_ORACLE": PRICE_ORACLE_ADDRESS,
+
     "LOAN_NFT": LOAN_NFT_ADDRESS,
     "POSITION_REGISTRY": POSITION_REGISTRY_ADDRESS,
+
     "COLLATERAL_VAULT": COLLATERAL_VAULT_ADDRESS,
     "LOAN_MANAGER": LOAN_MANAGER_ADDRESS,
+
     "MOCK_USDC_ADDRESS": MOCK_USDC_ADDRESS,
-    
 
     # Settlement
     "SETTLEMENT_ENGINE": SETTLEMENT_ENGINE_ADDRESS,
     "NETTING_ENGINE": NETTING_ENGINE_ADDRESS,
     "ESCROW_MANAGER": ESCROW_MANAGER_ADDRESS,
     "DVP_ENGINE": DVP_ENGINE_ADDRESS,
+
+    # Liquidation
+    "LIQUIDATION_ENGINE": LIQUIDATION_ENGINE_ADDRESS,
 }
 
 

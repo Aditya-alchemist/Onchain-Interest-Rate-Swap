@@ -22,6 +22,9 @@ from config import (
     NETTING_ENGINE_ADDRESS,
     ESCROW_MANAGER_ADDRESS,
     DVP_ENGINE_ADDRESS,
+
+    # Liquidation
+    LIQUIDATION_ENGINE_ADDRESS,
 )
 
 
@@ -40,13 +43,28 @@ w3 = Web3(
 
 def load_abi(contract_name):
 
+    path = f"abis/{contract_name}.json"
+
     with open(
-        f"abis/{contract_name}.json",
+        path,
         "r",
         encoding="utf-8"
     ) as f:
 
-        return json.load(f)
+        data = json.load(f)
+
+    # Supports both:
+    #
+    # 1. Raw ABI:
+    #    [...]
+    #
+    # 2. Foundry artifact:
+    #    {"abi": [...]}
+    #
+    if isinstance(data, dict):
+        return data["abi"]
+
+    return data
 
 
 # ============================================================
@@ -54,6 +72,11 @@ def load_abi(contract_name):
 # ============================================================
 
 def checksum(address):
+
+    if not address:
+        raise ValueError(
+            "Contract address is not configured"
+        )
 
     return Web3.to_checksum_address(address)
 
@@ -66,6 +89,14 @@ if not w3.is_connected():
 
     raise RuntimeError(
         "Could not connect to Sepolia RPC"
+    )
+
+
+if w3.eth.chain_id != 11155111:
+
+    raise RuntimeError(
+        f"Wrong chain. Expected Sepolia "
+        f"(11155111), got {w3.eth.chain_id}"
     )
 
 
@@ -156,4 +187,23 @@ escrow_manager = w3.eth.contract(
 dvp_engine = w3.eth.contract(
     address=checksum(DVP_ENGINE_ADDRESS),
     abi=load_abi("DvPEngine")
+)
+
+
+# ============================================================
+# LIQUIDATION
+# ============================================================
+
+liquidation_engine = w3.eth.contract(
+    address=checksum(LIQUIDATION_ENGINE_ADDRESS),
+    abi=load_abi("LiquidationEngine")
+)
+
+
+# ============================================================
+# CONNECTION INFO
+# ============================================================
+
+print(
+    f"[contracts] Connected to chain {w3.eth.chain_id}"
 )
