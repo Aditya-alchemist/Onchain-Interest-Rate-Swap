@@ -1,54 +1,40 @@
 =================================================
-               HedgeFi Deployment
-  =================================================
-  Deployer:
-  0x203FAeA73e70013562886670BD30985e9D5873d6
-  
-  
-  =================================================
             HedgeFi Deployment Complete
   =================================================
-  Deployer:
-  0x203FAeA73e70013562886670BD30985e9D5873d6
   
-  --------------- CORE ----------------
   MockUSDC:
-  0xE2A3ed311d6D7076172aB22Bb47ce4Bbf1259ADD
+  0x66E94783579f6bd5556397bb24aFa6456B2f4494
   MockPriceOracle:
-  0x04858EcB477Fb7f8c20E1DbD0c226a62767b999e
+  0x0D848bCAE650C427Be8abe176BA89DF37cfc7a6A
   Governance:
-  0xbaF87991615dE1E2911A691c1f4B4883BCAd5148
+  0xdcB29eDF4093F7F04e74621f9Bc1B6738d52165e
   InterestRateModel:
-  0x496B2771053b1143EaB4Cefa6EDe94da22625C65
-  
-  --------------- LENDING ---------------
+  0xCb6824f0D00ee2Bc561bda86740F7330974d6Eb0
   CollateralVault:
-  0xf028Cd99727aFfD27fc27FEC3799723b603F8690
+  0x4bf3d91153d4E6a5EBA75831a7245F97c3cEced1
   LendingPool:
-  0x2B6932aa12ccD2889386B5640b37FB5e9517e4c4
+  0xd2aaa51844ADD4e42960E7855FDe84F0095B577E
   LoanManager:
-  0x3353A130bC3ae6797a253568ec755518Dec6024b
+  0x1183102fCa6028376f4Dcb2EdA26C59E966ea200
   LoanNFT:
-  0xAE45584Ad15Cb1d5eE6AcfDed5f063B6232bb56E
-  
-  --------------- TOKENIZATION ---------------
+  0x128Fd5ca03e1BF89F105c9B8cdeb552673EB5EC6
   PositionRegistry:
-  0x7e3A0b5dCb1e22b602546ECc3d5e39029e4Ec7e2
+  0x0933CEb8daaf06820C5AcAe5c2E08287910DF18F
   SwapNFT:
-  0x39840C0B1fCC3a4597547e8a2000fb9963Cd18eF
-  
-  --------------- SWAPS ---------------
+  0xF259E97cBC172277DBb2dC3dF9cAcD27Ed826E0D
   SwapFactory:
-  0x9F9e18A62d2b25f577721D028F4fa33c173d71ef
+  0xaD028c25F6b7C5BaFbf19cE3CCCc6bd56b5eC322
   SwapEngine:
-  0xd5955F6C0F07Af02dAb8BAE1FF8d91881C4008b8
+  0x428F92986302A03002b14aaD9ed24aBD24D6221f
   SettlementEngine:
-  0xBe9012856986bac17FF976F4CBfF3c005aA4FdB2
+  0xCF1a10aaA20E02a5311F48F958652280A8B14438
   NettingEngine:
-  0x6e290875Ff9CF5158A38bfec04F2a535Fd7125F5
-  
-  --------------- SETTLEMENT ---------------
+  0xC1F2ea4c74Fd09676a6C13C8BfaC80C1e952dc43
   EscrowManager:
-  0x7AfF47DB7CDe2Fdfe68B3AaC8a1F259B66b86B57
+  0x3A62Be8A59Adb46F4d725fa2EfB4bD19B129bb38
   DvPEngine:
-  0x0Cd649f67f350D3bf09a7E87118E0043b8dDcF46
+  0x3cc1F93aAB4C6083e1630E38365ae521899CD73c
+  LiquidationEngine:
+  0x3B02d789Cc897b9ecEDbd9DbE782cc713c09de54
+  
+  =================================================
