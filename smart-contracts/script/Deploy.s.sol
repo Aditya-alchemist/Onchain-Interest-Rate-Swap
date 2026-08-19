@@ -44,6 +44,10 @@ contract Deploy is Script {
         address deployer =
             vm.addr(deployerPrivateKey);
 
+        // ====================================================
+        // HEADER
+        // ====================================================
+
         console2.log("");
         console2.log(
             "================================================="
@@ -54,24 +58,40 @@ contract Deploy is Script {
         console2.log(
             "================================================="
         );
+
         console2.log(
             "Deployer:"
         );
-        console2.logAddress(deployer);
+
+        console2.logAddress(
+            deployer
+        );
+
+        console2.log("");
+
 
         vm.startBroadcast(
             deployerPrivateKey
         );
 
+
         // ====================================================
         // CORE
         // ====================================================
 
+        console2.log(
+            "[1/7] Deploying core contracts..."
+        );
+
         MockUSDC usdc =
-            new MockUSDC(deployer);
+            new MockUSDC(
+                deployer
+            );
 
         MockPriceOracle oracle =
-            new MockPriceOracle(deployer);
+            new MockPriceOracle(
+                deployer
+            );
 
         Governance governance =
             new Governance(
@@ -84,9 +104,14 @@ contract Deploy is Script {
                 deployer
             );
 
+
         // ====================================================
         // LENDING
         // ====================================================
+
+        console2.log(
+            "[2/7] Deploying lending contracts..."
+        );
 
         CollateralVault vault =
             new CollateralVault(
@@ -120,9 +145,14 @@ contract Deploy is Script {
                 deployer
             );
 
+
         // ====================================================
         // SETTLEMENT
         // ====================================================
+
+        console2.log(
+            "[3/7] Deploying settlement contracts..."
+        );
 
         SettlementEngine settlementEngine =
             new SettlementEngine(
@@ -149,9 +179,14 @@ contract Deploy is Script {
                 deployer
             );
 
+
         // ====================================================
         // SWAPS
         // ====================================================
+
+        console2.log(
+            "[4/7] Deploying swap contracts..."
+        );
 
         SwapFactory swapFactory =
             new SwapFactory(
@@ -175,9 +210,14 @@ contract Deploy is Script {
                 deployer
             );
 
+
         // ====================================================
         // LIQUIDATION
         // ====================================================
+
+        console2.log(
+            "[5/7] Deploying liquidation contracts..."
+        );
 
         LiquidationEngine liquidationEngine =
             new LiquidationEngine(
@@ -185,26 +225,47 @@ contract Deploy is Script {
                 address(loanManager)
             );
 
+
         // ====================================================
         // WIRING
         // ====================================================
 
+        console2.log(
+            "[6/7] Wiring contracts..."
+        );
+
+
+        // ----------------------------------------------------
         // LendingPool
+        // ----------------------------------------------------
+
         lendingPool.setLoanManager(
             address(loanManager)
         );
 
+
+        // ----------------------------------------------------
         // CollateralVault
+        // ----------------------------------------------------
+
         vault.transferOwnership(
             address(loanManager)
         );
 
+
+        // ----------------------------------------------------
         // LoanNFT
+        // ----------------------------------------------------
+
         loanNFT.setLoanManager(
             address(loanManager)
         );
 
+
+        // ----------------------------------------------------
         // LoanManager
+        // ----------------------------------------------------
+
         loanManager.setLoanNFT(
             address(loanNFT)
         );
@@ -221,7 +282,21 @@ contract Deploy is Script {
             address(liquidationEngine)
         );
 
+
+        // ----------------------------------------------------
+        // IMPORTANT:
+        // SwapEngine -> LoanManager
+        // ----------------------------------------------------
+
+        swapEngine.setLoanManager(
+            address(loanManager)
+        );
+
+
+        // ----------------------------------------------------
         // PositionRegistry
+        // ----------------------------------------------------
+
         registry.setLoanManager(
             address(loanManager)
         );
@@ -230,17 +305,29 @@ contract Deploy is Script {
             address(swapEngine)
         );
 
+
+        // ----------------------------------------------------
         // SwapNFT
+        // ----------------------------------------------------
+
         swapNFT.setSwapEngine(
             address(swapEngine)
         );
 
+
+        // ----------------------------------------------------
         // SwapFactory
+        // ----------------------------------------------------
+
         swapFactory.setSwapEngine(
             address(swapEngine)
         );
 
+
+        // ----------------------------------------------------
         // SettlementEngine
+        // ----------------------------------------------------
+
         settlementEngine.setSwapEngine(
             address(swapEngine)
         );
@@ -249,96 +336,209 @@ contract Deploy is Script {
             address(dvpEngine)
         );
 
-        // Escrow
+
+        // ----------------------------------------------------
+        // EscrowManager
+        // ----------------------------------------------------
+
         escrow.setDvPEngine(
             address(dvpEngine)
         );
 
-        // DvP
+
+        // ----------------------------------------------------
+        // DvPEngine
+        // ----------------------------------------------------
+
         dvpEngine.setSwapEngine(
             address(swapEngine)
         );
 
+
         vm.stopBroadcast();
+
+
+        // ====================================================
+        // CONFIGURATION VERIFICATION
+        // ====================================================
+
+        console2.log(
+            "[7/7] Verifying configuration..."
+        );
+
+        console2.log("");
+
+        console2.log(
+            "LoanManager:"
+        );
+        console2.logAddress(
+            address(loanManager)
+        );
+
+        console2.log(
+            "LiquidationEngine:"
+        );
+        console2.logAddress(
+            address(liquidationEngine)
+        );
+
+        console2.log(
+            "SwapEngine:"
+        );
+        console2.logAddress(
+            address(swapEngine)
+        );
+
+        console2.log("");
+
 
         // ====================================================
         // OUTPUT
         // ====================================================
 
-        console2.log("");
         console2.log(
             "================================================="
         );
+
         console2.log(
             "          HedgeFi Deployment Complete"
         );
+
         console2.log(
             "================================================="
         );
 
         console2.log("");
-        console2.log("MockUSDC:");
-        console2.logAddress(address(usdc));
 
-        console2.log("MockPriceOracle:");
-        console2.logAddress(address(oracle));
+        console2.log(
+            "MockUSDC:"
+        );
+        console2.logAddress(
+            address(usdc)
+        );
 
-        console2.log("Governance:");
-        console2.logAddress(address(governance));
+        console2.log(
+            "MockPriceOracle:"
+        );
+        console2.logAddress(
+            address(oracle)
+        );
 
-        console2.log("InterestRateModel:");
-        console2.logAddress(address(interestModel));
+        console2.log(
+            "Governance:"
+        );
+        console2.logAddress(
+            address(governance)
+        );
 
-        console2.log("CollateralVault:");
-        console2.logAddress(address(vault));
+        console2.log(
+            "InterestRateModel:"
+        );
+        console2.logAddress(
+            address(interestModel)
+        );
 
-        console2.log("LendingPool:");
-        console2.logAddress(address(lendingPool));
+        console2.log(
+            "CollateralVault:"
+        );
+        console2.logAddress(
+            address(vault)
+        );
 
-        console2.log("LoanManager:");
-        console2.logAddress(address(loanManager));
+        console2.log(
+            "LendingPool:"
+        );
+        console2.logAddress(
+            address(lendingPool)
+        );
 
-        console2.log("LoanNFT:");
-        console2.logAddress(address(loanNFT));
+        console2.log(
+            "LoanManager:"
+        );
+        console2.logAddress(
+            address(loanManager)
+        );
 
-        console2.log("PositionRegistry:");
-        console2.logAddress(address(registry));
+        console2.log(
+            "LoanNFT:"
+        );
+        console2.logAddress(
+            address(loanNFT)
+        );
 
-        console2.log("SwapNFT:");
-        console2.logAddress(address(swapNFT));
+        console2.log(
+            "PositionRegistry:"
+        );
+        console2.logAddress(
+            address(registry)
+        );
 
-        console2.log("SwapFactory:");
-        console2.logAddress(address(swapFactory));
+        console2.log(
+            "SwapNFT:"
+        );
+        console2.logAddress(
+            address(swapNFT)
+        );
 
-        console2.log("SwapEngine:");
-        console2.logAddress(address(swapEngine));
+        console2.log(
+            "SwapFactory:"
+        );
+        console2.logAddress(
+            address(swapFactory)
+        );
 
-        console2.log("SettlementEngine:");
+        console2.log(
+            "SwapEngine:"
+        );
+        console2.logAddress(
+            address(swapEngine)
+        );
+
+        console2.log(
+            "SettlementEngine:"
+        );
         console2.logAddress(
             address(settlementEngine)
         );
 
-        console2.log("NettingEngine:");
+        console2.log(
+            "NettingEngine:"
+        );
         console2.logAddress(
             address(nettingEngine)
         );
 
-        console2.log("EscrowManager:");
+        console2.log(
+            "EscrowManager:"
+        );
         console2.logAddress(
             address(escrow)
         );
 
-        console2.log("DvPEngine:");
+        console2.log(
+            "DvPEngine:"
+        );
         console2.logAddress(
             address(dvpEngine)
         );
 
-        console2.log("LiquidationEngine:");
+        console2.log(
+            "LiquidationEngine:"
+        );
         console2.logAddress(
             address(liquidationEngine)
         );
 
         console2.log("");
+
+        console2.log(
+            "================================================="
+        );
+
+        console2.log(
+            "             Deployment Finished"
+        );
+
         console2.log(
             "================================================="
         );
