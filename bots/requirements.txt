@@ -45,6 +45,7 @@ typing_extensions==4.16.0
 tzdata==2026.3
 tzlocal==5.4.4
 urllib3==2.7.0
+requests
 web3==7.16.0
 websockets==15.0.1
 win32_setctime==1.2.0
