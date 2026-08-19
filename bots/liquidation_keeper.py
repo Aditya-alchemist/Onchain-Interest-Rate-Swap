@@ -1,6 +1,8 @@
 import time
 from datetime import datetime, timezone
 
+from web3 import Web3
+
 from config import (
     PRIVATE_KEY,
     CHAIN_ID,
@@ -12,6 +14,8 @@ from contracts import (
     w3,
     loan_manager,
     loan_nft,
+    liquidation_engine,
+    mock_usdc,
 )
 
 
@@ -24,6 +28,15 @@ KEEPER = account.address
 
 
 # ============================================================
+# CONSTANTS
+# ============================================================
+
+MAX_UINT256 = 2**256 - 1
+
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+
+# ============================================================
 # HELPERS
 # ============================================================
 
@@ -32,13 +45,19 @@ def now():
 
 
 def send_transaction(tx):
+    """
+    Sign, send and wait for a transaction.
+    """
+
     signed = account.sign_transaction(tx)
 
     tx_hash = w3.eth.send_raw_transaction(
         signed.raw_transaction
     )
 
-    print(f"  [TX] Submitted: {tx_hash.hex()}")
+    print(
+        f"  [TX] Submitted: {tx_hash.hex()}"
+    )
 
     receipt = w3.eth.wait_for_transaction_receipt(
         tx_hash
@@ -48,53 +67,138 @@ def send_transaction(tx):
 
 
 def build_base_tx():
+    """
+    Common transaction parameters.
+    """
+
     return {
         "from": KEEPER,
         "nonce": w3.eth.get_transaction_count(
             KEEPER,
-            "pending"
+            "pending",
         ),
         "chainId": CHAIN_ID,
         "gasPrice": w3.eth.gas_price,
     }
 
 
+def format_usdc(amount):
+    return f"{amount / 1e6:.6f} USDC"
+
+
+# ============================================================
+# CONTRACT CONFIGURATION CHECK
+# ============================================================
+
+def verify_configuration():
+    """
+    Verify that LiquidationEngine points to the same
+    LoanManager that the keeper is using.
+
+    This is important because:
+
+        keeper
+          -> LiquidationEngine
+          -> LoanManager
+
+    must all reference the correct deployed contracts.
+    """
+
+    print()
+    print("[CONFIG] Verifying liquidation configuration...")
+
+    engine_loan_manager = (
+        liquidation_engine
+        .functions
+        .loanManager()
+        .call()
+    )
+
+    configured_engine = (
+        loan_manager
+        .functions
+        .liquidationEngine()
+        .call()
+    )
+
+    print(
+        f"[CONFIG] LiquidationEngine: "
+        f"{liquidation_engine.address}"
+    )
+
+    print(
+        f"[CONFIG] Engine -> LoanManager: "
+        f"{engine_loan_manager}"
+    )
+
+    print(
+        f"[CONFIG] LoanManager -> Engine: "
+        f"{configured_engine}"
+    )
+
+    if (
+        Web3.to_checksum_address(
+            engine_loan_manager
+        )
+        != Web3.to_checksum_address(
+            loan_manager.address
+        )
+    ):
+        raise Exception(
+            "LiquidationEngine points to the wrong LoanManager."
+        )
+
+    if (
+        Web3.to_checksum_address(
+            configured_engine
+        )
+        != Web3.to_checksum_address(
+            liquidation_engine.address
+        )
+    ):
+        raise Exception(
+            "LoanManager points to the wrong LiquidationEngine."
+        )
+
+    print(
+        "[CONFIG] ✓ LiquidationEngine <-> LoanManager "
+        "configuration is correct."
+    )
+
+
 # ============================================================
 # LOAN DISCOVERY
 # ============================================================
 
-def get_latest_token_id():
+def get_loan_count():
     """
-    Read the latest/current LoanNFT token ID.
+    Read LoanNFT.nextTokenId().
 
-    IMPORTANT:
-    In the currently deployed HedgeFi LoanNFT contract:
+    Your current deployment has Loan #1, and the observed
+    nextTokenId() behavior indicates token #1 must be checked.
 
-        nextTokenId() == 1
-
-    while token ID 1 already exists.
-
-    Therefore this value behaves as the latest minted token ID,
-    not the next unused token ID.
-
-    Example:
-
-        nextTokenId() = 1
-        valid token IDs = [1]
-
-        nextTokenId() = 5
-        valid token IDs = [1, 2, 3, 4, 5]
+    We therefore scan inclusively and simply ignore IDs that
+    do not contain an active loan.
     """
 
     try:
-        latest_token = (
+
+        next_token = (
             loan_nft
             .functions
             .nextTokenId()
             .call()
         )
 
-        return int(latest_token)
+        next_token = int(next_token)
+
+        print(
+            f"[{now()}] "
+            f"[SCAN] Checking LoanNFT IDs "
+            f"1 -> {next_token}"
+        )
+
+        return next_token
 
     except Exception as e:
 
@@ -108,27 +212,21 @@ def get_latest_token_id():
 
 def scan_loans():
     """
-    Scan LoanNFT IDs directly.
+    Discover active loans directly through LoanManager.
 
-    We deliberately do NOT depend on eth_getLogs because
-    the previous Alchemy event-query approach returned HTTP 400.
-
-    Instead we inspect each LoanManager loan directly.
+    We deliberately do NOT depend on eth_getLogs / event
+    scanning because your Alchemy endpoint previously returned
+    a 400 error for that approach.
     """
 
-    latest_token = get_latest_token_id()
+    max_token = get_loan_count()
 
-    if latest_token < 1:
+    if max_token <= 0:
         return []
 
     loans = []
 
-    print(
-        f"[{now()}] "
-        f"[SCAN] Checking LoanNFT IDs 1 -> {latest_token}"
-    )
-
-    for token_id in range(1, latest_token + 1):
+    for token_id in range(1, max_token + 1):
 
         try:
 
@@ -153,8 +251,9 @@ def scan_loans():
             if not active:
                 continue
 
-            if borrower.lower() == (
-                "0x0000000000000000000000000000000000000000"
+            if (
+                borrower.lower()
+                == ZERO_ADDRESS.lower()
             ):
                 continue
 
@@ -168,12 +267,144 @@ def scan_loans():
 
         except Exception as e:
 
+            # Non-existent token IDs are harmless.
             print(
                 f"[{now()}] "
-                f"[WARN] Could not read Loan #{token_id}: {e}"
+                f"[SCAN] Loan #{token_id} unavailable: "
+                f"{e}"
             )
 
     return loans
+
+
+# ============================================================
+# USDC / LIQUIDATOR PREPARATION
+# ============================================================
+
+def get_usdc_balance():
+    return (
+        mock_usdc
+        .functions
+        .balanceOf(KEEPER)
+        .call()
+    )
+
+
+def get_usdc_allowance():
+    return (
+        mock_usdc
+        .functions
+        .allowance(
+            KEEPER,
+            loan_manager.address,
+        )
+        .call()
+    )
+
+
+def ensure_liquidator_approval(required_amount):
+    """
+    LoanManager.liquidate() executes:
+
+        usdc.transferFrom(
+            liquidator,
+            address(this),
+            debt
+        );
+
+    Therefore the keeper must approve LoanManager.
+
+    We approve MAX_UINT256 once rather than sending an approval
+    transaction for every liquidation.
+    """
+
+    balance = get_usdc_balance()
+    allowance = get_usdc_allowance()
+
+    print(
+        f"  [USDC] Keeper balance: "
+        f"{format_usdc(balance)}"
+    )
+
+    print(
+        f"  [USDC] LoanManager allowance: "
+        f"{format_usdc(allowance)}"
+    )
+
+    if balance < required_amount:
+
+        raise Exception(
+            "Insufficient USDC for liquidation. "
+            f"Required={format_usdc(required_amount)}, "
+            f"Balance={format_usdc(balance)}"
+        )
+
+    if allowance >= required_amount:
+
+        print(
+            "  [USDC] ✓ Existing allowance is sufficient."
+        )
+
+        return
+
+    print()
+    print(
+        "  [USDC] Approving LoanManager for liquidation..."
+    )
+
+    approve_contract = (
+        mock_usdc
+        .functions
+        .approve(
+            loan_manager.address,
+            MAX_UINT256,
+        )
+    )
+
+    # Simulation
+    approve_contract.call(
+        {
+            "from": KEEPER
+        }
+    )
+
+    gas_estimate = (
+        approve_contract
+        .estimate_gas(
+            {
+                "from": KEEPER
+            }
+        )
+    )
+
+    tx = build_base_tx()
+
+    tx["gas"] = int(
+        gas_estimate * 1.20
+    )
+
+    tx.update(
+        approve_contract
+        .build_transaction(tx)
+    )
+
+    print(
+        f"  [USDC] Approval gas: {gas_estimate}"
+    )
+
+    receipt = send_transaction(tx)
+
+    if receipt.status != 1:
+
+        raise Exception(
+            "USDC approval transaction failed."
+        )
+
+    print(
+        f"  [USDC] ✓ Approval confirmed "
+        f"| block={receipt.blockNumber} "
+        f"| gas={receipt.gasUsed}"
+    )
 
 
 # ============================================================
@@ -186,12 +417,31 @@ def liquidate_loan(
     health,
 ):
     """
-    Execute:
+    Correct liquidation path:
 
-        LoanManager.liquidate(
-            tokenId,
-            liquidator
-        )
+        LiquidationKeeper
+            |
+            v
+        LiquidationEngine.liquidate(tokenId)
+            |
+            v
+        LoanManager.liquidate(tokenId, msg.sender)
+
+    IMPORTANT:
+
+    Do NOT call:
+
+        LoanManager.liquidate(...)
+
+    directly.
+
+    LoanManager has:
+
+        onlyLiquidationEngine
+
+    and would revert with:
+
+        UnauthorizedLiquidationEngine()
     """
 
     print()
@@ -204,7 +454,8 @@ def liquidate_loan(
     )
 
     print(
-        f"  [LIQUIDATION] Borrower: {borrower}"
+        f"  [LIQUIDATION] Borrower: "
+        f"{borrower}"
     )
 
     print(
@@ -214,7 +465,13 @@ def liquidate_loan(
     )
 
     print(
-        f"  [LIQUIDATION] Liquidator: {KEEPER}"
+        f"  [LIQUIDATION] Liquidator: "
+        f"{KEEPER}"
+    )
+
+    print(
+        f"  [LIQUIDATION] Engine: "
+        f"{liquidation_engine.address}"
     )
 
     print(
@@ -228,8 +485,17 @@ def liquidate_loan(
     if DRY_RUN:
 
         print(
-            f"  [DRY RUN] Would liquidate "
-            f"Loan #{token_id}"
+            f"  [DRY RUN] Would call:"
+        )
+
+        print(
+            f"  [DRY RUN] "
+            f"LiquidationEngine.liquidate({token_id})"
+        )
+
+        print(
+            "  [DRY RUN] "
+            "No transaction will be sent."
         )
 
         return
@@ -237,36 +503,92 @@ def liquidate_loan(
     try:
 
         # ----------------------------------------------------
-        # SIMULATION
+        # IMPORTANT:
+        # We need an estimate of debt because LoanManager
+        # requires the liquidator to have enough USDC.
+        #
+        # The easiest safe check here is to use the current
+        # loan principal plus a small balance requirement.
+        #
+        # LoanManager itself calculates:
+        #
+        #   debt = principal + interest
+        #
+        # We therefore require the keeper to have at least the
+        # principal. The actual simulation below will catch
+        # insufficient balance/allowance for accrued interest.
+        # ----------------------------------------------------
+
+        loan_data = (
+            loan_manager
+            .functions
+            .getLoanByTokenId(token_id)
+            .call()
+        )
+
+        borrower_from_chain, loan = loan_data
+
+        principal = int(
+            loan[1]
+        )
+
+        print(
+            f"  [LIQUIDATION] Principal: "
+            f"{format_usdc(principal)}"
+        )
+
+        # ----------------------------------------------------
+        # Ensure USDC approval
+        # ----------------------------------------------------
+
+        ensure_liquidator_approval(
+            principal
+        )
+
+        # ----------------------------------------------------
+        # Simulation
+        #
+        # THIS IS THE CRITICAL FIX.
+        #
+        # Call LiquidationEngine, not LoanManager.
         # ----------------------------------------------------
 
         print(
-            "  [TX] Simulating liquidate()..."
+            "  [TX] Simulating "
+            "LiquidationEngine.liquidate()..."
         )
 
-        loan_manager.functions.liquidate(
-            token_id,
-            KEEPER,
-        ).call(
+        liquidation_call = (
+            liquidation_engine
+            .functions
+            .liquidate(
+                token_id
+            )
+        )
+
+        liquidation_call.call(
             {
                 "from": KEEPER
             }
         )
 
         print(
-            "  [TX] Simulation successful."
+            "  [TX] ✓ Liquidation simulation successful."
         )
 
         # ----------------------------------------------------
-        # GAS ESTIMATION
+        # Gas estimation
         # ----------------------------------------------------
 
+        print(
+            "  [TX] Estimating gas..."
+        )
+
         gas_estimate = (
-            loan_manager
+            liquidation_engine
             .functions
             .liquidate(
-                token_id,
-                KEEPER,
+                token_id
             )
             .estimate_gas(
                 {
@@ -276,7 +598,8 @@ def liquidate_loan(
         )
 
         print(
-            f"  [TX] Estimated gas: {gas_estimate}"
+            f"  [TX] Estimated gas: "
+            f"{gas_estimate}"
         )
 
         gas_limit = int(
@@ -284,7 +607,7 @@ def liquidate_loan(
         )
 
         # ----------------------------------------------------
-        # BUILD TRANSACTION
+        # Build transaction
         # ----------------------------------------------------
 
         tx = build_base_tx()
@@ -292,38 +615,52 @@ def liquidate_loan(
         tx["gas"] = gas_limit
 
         tx.update(
-            loan_manager
+            liquidation_engine
             .functions
             .liquidate(
-                token_id,
-                KEEPER,
+                token_id
             )
-            .build_transaction(tx)
+            .build_transaction(
+                tx
+            )
         )
 
         print(
-            f"  [TX] Nonce: {tx['nonce']}"
+            f"  [TX] Nonce: "
+            f"{tx['nonce']}"
         )
 
         print(
-            f"  [TX] Gas limit: {tx['gas']}"
+            f"  [TX] Gas limit: "
+            f"{tx['gas']}"
         )
 
         print(
-            f"  [TX] Gas price: {tx['gasPrice']}"
+            f"  [TX] Gas price: "
+            f"{tx['gasPrice']}"
         )
 
         # ----------------------------------------------------
-        # SEND
+        # Send transaction
         # ----------------------------------------------------
 
-        receipt = send_transaction(tx)
+        print(
+            "  [TX] Signing transaction..."
+        )
+
+        receipt = send_transaction(
+            tx
+        )
+
+        # ----------------------------------------------------
+        # Result
+        # ----------------------------------------------------
 
         if receipt.status == 1:
 
             print()
             print(
-                "  ========================================"
+                "  ============================================"
             )
 
             print(
@@ -345,21 +682,86 @@ def liquidate_loan(
             )
 
             print(
-                "  ========================================"
+                "  ============================================"
             )
 
         else:
 
             print(
-                "  [FAILED] "
-                "Liquidation transaction reverted."
+                "  [FAILED] Liquidation transaction reverted."
             )
 
     except Exception as e:
 
+        print()
         print(
             f"  [ERROR] Liquidation failed: {e}"
         )
+
+        # ----------------------------------------------------
+        # Helpful error decoding
+        # ----------------------------------------------------
+
+        error_text = str(e)
+
+        if "0x3d3be2a5" in error_text:
+
+            print()
+            print(
+                "  [DECODED ERROR]"
+            )
+
+            print(
+                "  UnauthorizedLiquidationEngine()"
+            )
+
+            print(
+                "  This means the keeper called "
+                "LoanManager.liquidate() directly."
+            )
+
+            print(
+                "  The keeper must call "
+                "LiquidationEngine.liquidate()."
+            )
+
+        elif "0xeb16e2ad" in error_text:
+
+            print()
+            print(
+                "  [DECODED ERROR]"
+            )
+
+            print(
+                "  InsufficientLiquidatorFunds()"
+            )
+
+            print(
+                "  The keeper does not have enough USDC "
+                "to repay the loan."
+            )
+
+        elif "LoanHealthy" in error_text:
+
+            print()
+            print(
+                "  [DECODED ERROR]"
+            )
+
+            print(
+                "  Loan is no longer liquidatable."
+            )
+
+        elif "NotLiquidatable" in error_text:
+
+            print()
+            print(
+                "  [DECODED ERROR]"
+            )
+
+            print(
+                "  LiquidationEngine rejected the loan."
+            )
 
 
 # ============================================================
@@ -381,25 +783,16 @@ def run_once():
         f"Active loans found: {len(loans)}"
     )
 
-    if not loans:
-
-        print(
-            f"[{now()}] "
-            "[SCAN] No active loans."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # PROCESS EACH ACTIVE LOAN
-    # --------------------------------------------------------
-
     for item in loans:
 
         token_id = item["token_id"]
         borrower = item["borrower"]
 
         try:
+
+            # ------------------------------------------------
+            # Health
+            # ------------------------------------------------
 
             health = (
                 loan_manager
@@ -409,6 +802,10 @@ def run_once():
                 )
                 .call()
             )
+
+            # ------------------------------------------------
+            # Liquidation status
+            # ------------------------------------------------
 
             liquidatable = (
                 loan_manager
@@ -426,7 +823,8 @@ def run_once():
             )
 
             print(
-                f"  Borrower: {borrower}"
+                f"  Borrower: "
+                f"{borrower}"
             )
 
             print(
@@ -439,10 +837,6 @@ def run_once():
                 f"  Liquidatable: "
                 f"{liquidatable}"
             )
-
-            # ------------------------------------------------
-            # LIQUIDATE
-            # ------------------------------------------------
 
             if liquidatable:
 
@@ -463,7 +857,8 @@ def run_once():
 
             print(
                 f"[{now()}] "
-                f"[ERROR] Loan #{token_id}: {e}"
+                f"[ERROR] Loan #{token_id}: "
+                f"{e}"
             )
 
 
@@ -489,9 +884,9 @@ print(
 )
 
 
-# ============================================================
-# LIQUIDATION PARAMETERS
-# ============================================================
+# ------------------------------------------------------------
+# Read liquidation parameters
+# ------------------------------------------------------------
 
 try:
 
@@ -524,22 +919,44 @@ try:
 except Exception as e:
 
     print(
-        "[WARN] "
-        "Could not read liquidation parameters:",
+        "[WARN] Could not read liquidation parameters:",
         e
     )
 
 
-# ============================================================
-# CONFIG
-# ============================================================
+# ------------------------------------------------------------
+# Configuration verification
+# ------------------------------------------------------------
+
+try:
+
+    verify_configuration()
+
+except Exception as e:
+
+    print()
+    print(
+        "[FATAL] Liquidation configuration is invalid."
+    )
+
+    print(
+        f"[FATAL] {e}"
+    )
+
+    raise
+
+
+# ------------------------------------------------------------
+# Keeper configuration
+# ------------------------------------------------------------
 
 print(
     f"[KEEPER] DRY_RUN: {DRY_RUN}"
 )
 
 print(
-    f"[KEEPER] POLL_INTERVAL: {POLL_INTERVAL}s"
+    f"[KEEPER] POLL_INTERVAL: "
+    f"{POLL_INTERVAL}s"
 )
 
 print(
@@ -570,7 +987,10 @@ while True:
 
         print()
         print(
-            f"[KEEPER] Unexpected error: {e}"
+            f"[KEEPER] Unexpected error: "
+            f"{e}"
         )
 
-    time.sleep(POLL_INTERVAL)
+    time.sleep(
+        POLL_INTERVAL
+    )

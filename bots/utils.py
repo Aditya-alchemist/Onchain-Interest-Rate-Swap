@@ -6,34 +6,58 @@ from config import PRIVATE_KEY, CHAIN_ID
 from contracts import w3
 
 
+# ============================================================
+# ACCOUNT
+# ============================================================
+
 def get_account():
     """
     Return the account derived from PRIVATE_KEY.
     """
+
+    if not PRIVATE_KEY:
+        raise RuntimeError(
+            "PRIVATE_KEY is not configured"
+        )
+
     return Account.from_key(PRIVATE_KEY)
 
 
 def get_sender():
     """
-    Return the checksum address of the bot wallet.
+    Return the checksum address of the keeper wallet.
     """
+
     return get_account().address
 
 
+# ============================================================
+# NONCE
+# ============================================================
+
 def get_nonce():
     """
-    Get the next pending nonce for the bot wallet.
+    Get the next pending nonce.
+
+    'pending' is important because the wallet may already
+    have an unconfirmed transaction in the mempool.
     """
+
     return w3.eth.get_transaction_count(
         get_sender(),
         "pending"
     )
 
 
+# ============================================================
+# BALANCE
+# ============================================================
+
 def get_balance():
     """
     Return native ETH balance in Wei.
     """
+
     return w3.eth.get_balance(
         get_sender()
     )
@@ -43,32 +67,66 @@ def get_balance_eth():
     """
     Return native ETH balance in ETH.
     """
+
     return w3.from_wei(
         get_balance(),
         "ether"
     )
 
 
-def build_transaction(function, value=0):
+# ============================================================
+# GAS
+# ============================================================
+
+def get_gas_price():
     """
-    Build a transaction for a contract function.
+    Return current network gas price.
+    """
+
+    return w3.eth.gas_price
+
+
+# ============================================================
+# TRANSACTION BUILDING
+# ============================================================
+
+def build_transaction(
+    function,
+    value=0,
+    gas=500_000,
+):
+    """
+    Convert a Web3 ContractFunction into a transaction dict.
+
+    Example:
+
+        call = contract.functions.someFunction(...)
+        tx = build_transaction(call)
     """
 
     account = get_account()
 
-    return function.build_transaction({
+    nonce = get_nonce()
+
+    tx = function.build_transaction({
         "from": account.address,
-        "nonce": get_nonce(),
+        "nonce": nonce,
         "chainId": CHAIN_ID,
-        "gas": 500000,
-        "gasPrice": w3.eth.gas_price,
+        "gas": gas,
+        "gasPrice": get_gas_price(),
         "value": value,
     })
 
+    return tx
+
+
+# ============================================================
+# SIGNING
+# ============================================================
 
 def sign_transaction(transaction):
     """
-    Sign a transaction using the bot private key.
+    Sign a transaction dictionary.
     """
 
     account = get_account()
@@ -78,9 +136,17 @@ def sign_transaction(transaction):
     )
 
 
+# ============================================================
+# SEND
+# ============================================================
+
 def send_transaction(transaction):
     """
     Sign and broadcast a transaction.
+
+    IMPORTANT:
+    transaction must be a transaction dictionary,
+    NOT a ContractFunction.
     """
 
     signed = sign_transaction(
@@ -94,20 +160,34 @@ def send_transaction(transaction):
     return tx_hash
 
 
-def wait_for_transaction(tx_hash, timeout=300):
+# ============================================================
+# WAIT
+# ============================================================
+
+def wait_for_transaction(
+    tx_hash,
+    timeout=300,
+):
     """
-    Wait for transaction confirmation.
+    Wait for a transaction to be mined.
     """
 
     return w3.eth.wait_for_transaction_receipt(
         tx_hash,
-        timeout=timeout
+        timeout=timeout,
     )
 
 
-def send_and_wait(transaction):
+# ============================================================
+# SEND + WAIT
+# ============================================================
+
+def send_and_wait(
+    transaction,
+    timeout=300,
+):
     """
-    Sign, send and wait for confirmation.
+    Sign, broadcast and wait for confirmation.
     """
 
     tx_hash = send_transaction(
@@ -115,30 +195,85 @@ def send_and_wait(transaction):
     )
 
     print(
-        "TX:",
-        tx_hash.hex()
+        f"[TX] Submitted: {tx_hash.hex()}"
+    )
+
+    print(
+        "[TX] Waiting for confirmation..."
     )
 
     receipt = wait_for_transaction(
-        tx_hash
+        tx_hash,
+        timeout=timeout,
     )
 
-    print(
-        "Status:",
-        receipt.status
-    )
+    if receipt["status"] == 1:
 
-    print(
-        "Block:",
-        receipt.blockNumber
-    )
+        print(
+            f"[TX] SUCCESS | "
+            f"block={receipt['blockNumber']} | "
+            f"gas={receipt['gasUsed']}"
+        )
+
+    else:
+
+        print(
+            f"[TX] FAILED | "
+            f"tx={tx_hash.hex()}"
+        )
+
+        raise RuntimeError(
+            f"Transaction reverted: "
+            f"{tx_hash.hex()}"
+        )
 
     return receipt
 
 
+# ============================================================
+# SAFE CONTRACT TRANSACTION
+# ============================================================
+
+def execute_contract(
+    function,
+    gas=500_000,
+    value=0,
+    timeout=300,
+):
+    """
+    Convenience helper:
+
+        ContractFunction
+              ↓
+        build transaction
+              ↓
+            sign
+              ↓
+           broadcast
+              ↓
+          confirmation
+
+    """
+
+    tx = build_transaction(
+        function,
+        value=value,
+        gas=gas,
+    )
+
+    return send_and_wait(
+        tx,
+        timeout=timeout,
+    )
+
+
+# ============================================================
+# SLEEP
+# ============================================================
+
 def sleep(seconds):
     """
-    Sleep helper for keepers.
+    Sleep helper.
     """
 
     time.sleep(seconds)
