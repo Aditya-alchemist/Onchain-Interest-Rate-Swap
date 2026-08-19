@@ -1,40 +1,66 @@
-=================================================
+== Logs ==
+  
+  =================================================
+               HedgeFi Deployment
+  =================================================
+  Deployer:
+  0x203FAeA73e70013562886670BD30985e9D5873d6
+  
+  [1/7] Deploying core contracts...
+  [2/7] Deploying lending contracts...
+  [3/7] Deploying settlement contracts...
+  [4/7] Deploying swap contracts...
+  [5/7] Deploying liquidation contracts...
+  [6/7] Wiring contracts...
+  [7/7] Verifying configuration...
+  
+  LoanManager:
+  0x8766116905DCa698aB3Bc1Bb780862D37ef1CF0E
+  LiquidationEngine:
+  0x7731A86d12cd4eC6a0E7C6ff105C02fb2A4c68F8
+  SwapEngine:
+  0x7b44A04D98aeFeEae5F2AE545B1172e72eCa2EA8
+  
+  =================================================
             HedgeFi Deployment Complete
   =================================================
   
   MockUSDC:
-  0x66E94783579f6bd5556397bb24aFa6456B2f4494
+  0x147a0eE92DF7A0844823CE08c4314251E7DF2996
   MockPriceOracle:
-  0x0D848bCAE650C427Be8abe176BA89DF37cfc7a6A
+  0x4044a8d0D6D1884cFB8796f03CA77104ed25CCa8
   Governance:
-  0xdcB29eDF4093F7F04e74621f9Bc1B6738d52165e
+  0xe1E9b9f8F88250679080Ac7F70969C4bDd935257
   InterestRateModel:
-  0xCb6824f0D00ee2Bc561bda86740F7330974d6Eb0
+  0x604eF0f272ADc573808360447F52d0cB0667878d
   CollateralVault:
-  0x4bf3d91153d4E6a5EBA75831a7245F97c3cEced1
+  0xd4A9f3dE299c2c15B8EFcB7c0BC294d22297E1E6
   LendingPool:
-  0xd2aaa51844ADD4e42960E7855FDe84F0095B577E
+  0x705306c2561C9963c555F81Af87Ca90FA97FeeE1
   LoanManager:
-  0x1183102fCa6028376f4Dcb2EdA26C59E966ea200
+  0x8766116905DCa698aB3Bc1Bb780862D37ef1CF0E
   LoanNFT:
-  0x128Fd5ca03e1BF89F105c9B8cdeb552673EB5EC6
+  0x2BB7843cB363A5E45AA46f25d2e4289D52fE27cf
   PositionRegistry:
-  0x0933CEb8daaf06820C5AcAe5c2E08287910DF18F
+  0x7645C74969e83fa5f14BAC9Bf91e57F7b72e2ee3
   SwapNFT:
-  0xF259E97cBC172277DBb2dC3dF9cAcD27Ed826E0D
+  0xc96ECa17118b82d9a82e1E656dBa16dfD5cB0B82
   SwapFactory:
-  0xaD028c25F6b7C5BaFbf19cE3CCCc6bd56b5eC322
+  0x458Cc1400b372F771bda47A2FDB9B05f1C3Db258
   SwapEngine:
-  0x428F92986302A03002b14aaD9ed24aBD24D6221f
+  0x7b44A04D98aeFeEae5F2AE545B1172e72eCa2EA8
   SettlementEngine:
-  0xCF1a10aaA20E02a5311F48F958652280A8B14438
+  0x1E6B55962e5C1d82205057683fe0cE45D6e9B9B1
   NettingEngine:
-  0xC1F2ea4c74Fd09676a6C13C8BfaC80C1e952dc43
+  0xEED841080052d1D1B47870e23b62cCeAdF651dD4
   EscrowManager:
-  0x3A62Be8A59Adb46F4d725fa2EfB4bD19B129bb38
+  0xee5ec86849517488Fb1D03D32254DF46E30Fb29D
   DvPEngine:
-  0x3cc1F93aAB4C6083e1630E38365ae521899CD73c
+  0x16B1dA0f643F8102cA4798DD32C0681aeFb8b6f0
   LiquidationEngine:
-  0x3B02d789Cc897b9ecEDbd9DbE782cc713c09de54
+  0x7731A86d12cd4eC6a0E7C6ff105C02fb2A4c68F8
   
   =================================================
+               Deployment Finished
+  =================================================
+
