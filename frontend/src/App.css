@@ -1,38 +1,282 @@
-.App {
-  text-align: center;
+/* =========================================================
+   LOAN CARD
+   ========================================================= */
+
+.loan-card {
+  width: 100%;
+  background: var(--card-bg, #111318);
+  border: 1px solid var(--border-color, #242832);
+  border-radius: 16px;
+  padding: 20px;
+  transition:
+    border-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
+.loan-card:hover {
+  border-color: #353b48;
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
+.loan-card-compact {
+  padding: 16px;
 }
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
+/* Header */
+
+.loan-card-header {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.loan-card-title-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.loan-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
+  background: rgba(91, 141, 239, 0.1);
+  color: #6ea8fe;
 }
 
-.App-link {
-  color: #61dafb;
+.loan-card-title {
+  color: var(--text-primary, #f5f7fa);
+  font-size: 15px;
+  font-weight: 600;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
+.loan-card-borrower {
+  margin-top: 4px;
+  color: var(--text-muted, #7f8795);
+  font-size: 12px;
+  font-family: monospace;
+}
+
+/* Status */
+
+.loan-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.loan-status-active {
+  color: #8ca9d8;
+  background: rgba(91, 141, 239, 0.1);
+}
+
+.loan-status-healthy {
+  color: #5ee6a8;
+  background: rgba(46, 204, 113, 0.1);
+}
+
+.loan-status-warning {
+  color: #f3c969;
+  background: rgba(243, 201, 105, 0.1);
+}
+
+.loan-status-danger {
+  color: #ff7373;
+  background: rgba(255, 73, 73, 0.1);
+}
+
+.loan-status-closed {
+  color: #8b929e;
+  background: rgba(139, 146, 158, 0.1);
+}
+
+/* Main values */
+
+.loan-card-values {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border-color, #242832);
+}
+
+.loan-value {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.loan-value-label {
+  color: var(--text-muted, #7f8795);
+  font-size: 12px;
+}
+
+.loan-value-number {
+  color: var(--text-primary, #f5f7fa);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.loan-value-asset {
+  color: #7f8795;
+  font-size: 11px;
+}
+
+/* Metrics */
+
+.loan-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 18px 0;
+}
+
+.loan-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.loan-metric span {
+  color: var(--text-muted, #7f8795);
+  font-size: 11px;
+}
+
+.loan-metric strong {
+  color: var(--text-primary, #e9edf3);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.metric-success {
+  color: #5ee6a8 !important;
+}
+
+.metric-warning {
+  color: #f3c969 !important;
+}
+
+.metric-danger {
+  color: #ff7373 !important;
+}
+
+.metric-muted {
+  color: #777f8d !important;
+}
+
+/* Health */
+
+.loan-health-container {
+  margin-bottom: 18px;
+}
+
+.loan-health-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: #7f8795;
+  font-size: 11px;
+}
+
+.loan-health-track {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #242832;
+}
+
+.loan-health-bar {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+
+.loan-health-safe {
+  background: #4fdc9a;
+}
+
+.loan-health-warning {
+  background: #e8bf5e;
+}
+
+.loan-health-danger {
+  background: #f45d5d;
+}
+
+/* Actions */
+
+.loan-card-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.loan-action-primary,
+.loan-action-secondary {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.loan-action-primary {
+  background: #f5f7fa;
+  color: #0d0f12;
+}
+
+.loan-action-primary:hover {
+  background: #ffffff;
+}
+
+.loan-action-secondary {
+  background: transparent;
+  border-color: #2b303a;
+  color: #c8ced8;
+}
+
+.loan-action-secondary:hover {
+  background: #1a1e25;
+  border-color: #3a414d;
+}
+
+/* Mobile */
+
+@media (max-width: 600px) {
+  .loan-card-header {
+    flex-direction: column;
   }
-  to {
-    transform: rotate(360deg);
+
+  .loan-card-values {
+    grid-template-columns: 1fr;
+  }
+
+  .loan-card-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .loan-card-actions {
+    flex-wrap: wrap;
   }
 }
