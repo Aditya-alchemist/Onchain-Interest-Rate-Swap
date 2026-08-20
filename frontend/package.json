@@ -21,8 +21,8 @@
     "react-router-dom": "^7.18.2",
     "react-scripts": "5.0.1",
     "recharts": "^3.10.1",
-    "viem": "^2.55.19",
-    "wagmi": "^3.7.6",
+    "viem": "^2.51.0",
+    "wagmi": "^2.19.5",
     "web-vitals": "^2.1.0"
   },
   "scripts": {
