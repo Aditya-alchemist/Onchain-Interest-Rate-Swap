@@ -23,5 +23,9 @@ declare namespace NodeJS {
     readonly REACT_APP_DVP_ENGINE: string;
 
     readonly REACT_APP_LIQUIDATION_ENGINE: string;
+
+    // Optional: a CoinGecko demo API key for the ETH/USD chart feed.
+    // Left unset the chart uses CoinGecko's keyless public endpoint.
+    readonly REACT_APP_COINGECKO_API_KEY?: string;
   }
 }
