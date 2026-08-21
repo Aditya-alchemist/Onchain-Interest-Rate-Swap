@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React, {useState, useMemo } from "react";
 import { formatUnits, parseUnits } from "viem";
 
 import { useWallet } from "../hooks/useWallet";
 import { useLoan } from "../hooks/useLoan";
 import { useSwap } from "../hooks/useSwap";
+import { getContract } from "../lib/contracts";
 
 // ============================================================
 // TYPES
@@ -249,13 +250,27 @@ export default function HedgePanel({
        * )
        */
 
-      const swapId = await openSwap(
+      const receipt = await openSwap(
         effectiveLoanTokenId,
         notionalUsdc,
         fixedRateBps,
         durationSeconds,
         settlementIntervalSeconds
       );
+
+      const openedLog = receipt?.logs?.find(
+        (log: any) =>
+          log?.fragment?.name === "SwapOpened"
+      );
+
+      const swapId =
+        openedLog?.args?.swapId !== undefined
+          ? BigInt(openedLog.args.swapId)
+          : BigInt(
+              await getContract("SwapEngine").loanToSwapId(
+                effectiveLoanTokenId
+              )
+            );
 
       setSuccessMessage(
         swapId !== undefined
