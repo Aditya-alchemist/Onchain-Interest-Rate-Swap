@@ -98,7 +98,49 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        # A bare `npm ci` fails here with ERESOLVE, and it is not a stale
+        # lockfile. This dependency set has no peer-satisfying solution at all:
+        #
+        #   react-scripts@5.0.1  peerOptional typescript "^3.2.1 || ^4"
+        #   viem@2.55.19         peerOptional typescript ">=5.0.4"
+        #   wagmi@2.19.5         peerOptional typescript ">=5.0.4"
+        #
+        # The intersection of those ranges is empty, and `optional` only means
+        # the peer may be *absent* — once typescript is in the tree (it is, a
+        # devDependency at ^4.9.5) npm enforces every declared range against it.
+        # So whichever typescript is pinned, something is violated: 5.x breaks
+        # react-scripts, 4.x breaks viem and wagmi. Getting off react-scripts 5
+        # is the only real fix, and that is not a CI change.
+        #
+        # Why `npm ci` raises this at all, when it is meant to just replay a
+        # lockfile: npm 10's ci.js calls arb.buildIdealTree() *before* it
+        # validates the lockfile, and peer resolution happens in there.
+        # --legacy-peer-deps makes Arborist skip creating peer edges entirely
+        # (node.js: `if (pd && … && !this.legacyPeerDeps)`), leaving no peer
+        # conflict to resolve. It does not change which versions get installed —
+        # package-lock.json still decides that, so this stays reproducible.
+        # frontend/.npmrc sets the same option so a plain `npm install` works
+        # for a human too; it is repeated here on purpose, so this job cannot be
+        # silently broken by an edit to that file.
+        #
+        # The fallback covers the one thing not verifiable without a registry.
+        # Dropping peer edges makes the ideal tree a *subset* of the locked one,
+        # and npm's validateLockfile only walks the ideal tree (so extra locked
+        # entries are fine, and it never looks at the `overrides` field — which
+        # matters here, because this lockfile's root block omits the three
+        # overrides package.json declares, even though their effect is already
+        # baked in: @metamask/sdk is locked at 0.26.0, exactly what the override
+        # asks for). But a peer requirement that was influencing some version
+        # choice could in principle shift one, which would surface as EUSAGE. If
+        # that happens, say so loudly and install from package.json instead —
+        # a lockfile nit must not mask a real code failure in the steps below.
+        run: |
+          if npm ci --legacy-peer-deps; then
+            echo "OK — installed from package-lock.json."
+            exit 0
+          fi
+          echo "::warning::npm ci could not replay package-lock.json; installing from package.json instead. Regenerate the lockfile locally with 'npm install --legacy-peer-deps' and commit it."
+          npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Typecheck
         # The real compiler over the whole program, not a per-file transpile.
