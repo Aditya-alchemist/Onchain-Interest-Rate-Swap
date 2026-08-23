@@ -1,41 +1,138 @@
-# HedgeFi
+<div align="center">
+
+<img src="docs/img/banner.svg" alt="HedgeFi — borrow at a floating rate, swap it for a fixed one, settle so neither side can walk away" width="100%">
+
+[![CI](https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap/actions/workflows/ci.yml/badge.svg)](https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap/actions/workflows/ci.yml)
+![Solidity](https://img.shields.io/badge/Solidity-0.8.24-3ddc84?logo=solidity&logoColor=white)
+![Foundry](https://img.shields.io/badge/built%20with-Foundry-ffa53b)
+![React](https://img.shields.io/badge/React%2018-wagmi%20%2B%20viem-5aa2ff?logo=react&logoColor=white)
+![Python](https://img.shields.io/badge/keepers-Python%203.11-ffd93d?logo=python&logoColor=white)
+![Network](https://img.shields.io/badge/network-Sepolia-2dd4bf)
+![License](https://img.shields.io/badge/license-MIT-98a0b8)
 
 **A fixed-rate credit terminal for on-chain lending, interest-rate hedging, and delivery-versus-payment settlement.**
 
-[![CI](https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap/actions/workflows/ci.yml/badge.svg)](https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap/actions/workflows/ci.yml)
+17 Solidity contracts &nbsp;·&nbsp; one React trading terminal &nbsp;·&nbsp; three Python keepers &nbsp;·&nbsp; zero mock data in the UI
 
-HedgeFi is a full-stack DeFi protocol built for Ethereum Sepolia. It combines three products that normally live in separate applications into one trading-terminal interface:
-
-1. **An over-collateralised lending market** — deposit USDC to earn yield, lock ETH as collateral to borrow USDC at a utilisation-driven variable rate.
-2. **An interest-rate swap desk** — take the fixed or floating side of a rate swap to hedge the borrow rate you just took on, with periodic netted cash settlement.
-3. **A delivery-versus-payment settlement engine** — atomically exchange two assets between two parties through escrow, so neither side can walk away mid-trade.
-
-Everything the interface shows is read from live contracts. There is no mock data path in the UI: balances, rates, loan health, and swap positions are all `eth_call` results, and the single external market feed is labelled as such at all times.
+</div>
 
 ---
 
-## Table of contents
+## Start here
 
-- [The problem it solves](#the-problem-it-solves)
-- [Repository layout](#repository-layout)
-- [System architecture](#system-architecture)
-- [Contract catalogue](#contract-catalogue)
-- [Deployment wiring](#deployment-wiring)
-- [Core flows](#core-flows)
-- [State machines](#state-machines)
-- [The math](#the-math)
-- [Off-chain keepers](#off-chain-keepers)
-- [The frontend](#the-frontend)
-- [Getting started](#getting-started)
-- [Environment reference](#environment-reference)
-- [Testing](#testing)
-- [Continuous integration](#continuous-integration)
-- [Troubleshooting and known API issues](#troubleshooting-and-known-api-issues)
-- [Known limitations](#known-limitations)
+Borrowing money on-chain is easy. Knowing what it will *cost* you is not.
+
+Every DeFi lending market prices loans off how busy the pool is. Borrow when the pool is quiet and you might pay 4% a year. If a few large borrowers turn up next week and drain it, that same loan can be costing you 25% — and nobody asked your permission. Your debt is a moving target.
+
+**HedgeFi lets you nail that number down.** You borrow at the floating rate like normal, then open a swap that pays you back exactly the amount the rate moved against you. Rate goes up, the swap refunds the difference. Rate stays low, you pay a small amount for the insurance. Either way your cost of borrowing stops moving, and you can plan around it.
+
+That is the entire idea. Everything below is how it works.
+
+| | |
+|---|---|
+| **I just want to understand the concept** | [What is an interest-rate swap?](#what-is-an-interest-rate-swap) |
+| **Show me how the payments work** | [How each period settles](#how-each-period-settles) |
+| **I want to see the system** | [How it is put together](#how-it-is-put-together) |
+| **I want to run it** | [Run it yourself](#run-it-yourself) |
+| **I want the real detail** | [Under the hood](#under-the-hood) — every formula, flow chart and contract |
 
 ---
 
-## The problem it solves
+## What is an interest-rate swap?
+
+Two sides agree to trade one kind of interest for the other. One pays a **fixed** rate that was agreed up front. The other pays whatever the **floating** rate happens to be. They do this on an agreed amount — the *notional* — which never actually changes hands. It only exists to calculate the two payments from.
+
+<p align="center">
+  <img src="docs/img/swap-explained.svg" alt="An interest-rate swap in one picture: you pay fixed, the other side pays floating, and only the difference moves" width="94%">
+</p>
+
+Now put that next to your loan. You are *already* paying floating interest to the lending pool. If the swap pays you floating and you pay it fixed, the two floating amounts cancel out and you are left holding the fixed rate. That is the hedge — one moving cost swapped for one you chose.
+
+In HedgeFi your counterparty is the protocol itself, so there is nobody to find and no order book to fill. You pick a fixed rate and a duration on the Hedge page and the `SwapEngine` takes the other side.
+
+> Further reading, if you want the textbook version rather than mine: [cbonds — Interest Rate Swap (IRS)](https://cbonds.com/glossary/interest-rate-swap-irs/).
+
+<!-- Optional: to use the cbonds diagram here instead of ours, paste its image URL between the quotes below and delete the comment markers.
+<p align="center"><img src="" alt="Interest rate swap, cbonds" width="80%"></p>
+-->
+
+---
+
+## How each period settles
+
+A swap does not settle in one lump at the end. It settles every period — 30 days here — and only the *difference* between the two legs moves. Nobody sends a payment and gets one back; the contract works out who owes what and moves the net amount once.
+
+<p align="center">
+  <img src="docs/img/swap-payoff.svg" alt="Six settlement periods showing the netted amount when the floating rate lands above or below the fixed rate" width="98%">
+</p>
+
+Read across those six periods and the point of the whole exercise shows up: the bars move around a lot, but your combined cost — pool interest plus or minus the swap — sits at 10% the entire time. The volatility moved off your balance sheet and onto the swap.
+
+---
+
+## How it is put together
+
+Three moving parts. Contracts hold the money and the rules. A React terminal reads them directly, so every number on screen is an `eth_call` against Sepolia rather than a cached API response. Three Python keepers handle the jobs that need to happen on a timer, because a blockchain cannot wake itself up.
+
+<p align="center">
+  <img src="docs/img/architecture.svg" alt="HedgeFi architecture: browser and terminal above the chain boundary, then lending, tokenization, swaps, prices, governance and DvP settlement on Sepolia, with three Python keepers off-chain" width="100%">
+</p>
+
+<!-- All four diagrams are generated, not drawn by hand: python3 docs/diagrams/diagrams.py docs/img -->
+
+The three domains in the middle row are the ones worth knowing:
+
+| | What it does | Why you care |
+|---|---|---|
+| **Lending** | Takes USDC deposits, lends against ETH collateral, prices the loan off pool utilisation | This is where the floating rate you are trying to escape comes from |
+| **Swaps** | Opens the fixed-for-floating position, works out each period's net amount, closes out on repayment | This is the hedge |
+| **DvP settlement** | Moves both legs of a settlement in a single transaction, through escrow | So a settlement can never half-happen and leave one side short |
+
+Every position is also an NFT. Your loan is an ERC-721, your swap is an ERC-721, and both burn when you close the position — so your wallet is a readable record of what you have open.
+
+---
+
+## Run it yourself
+
+You need [Foundry](https://book.getfoundry.sh/getting-started/installation), Node 18+, Python 3.11+, and a Sepolia RPC endpoint with a funded test key.
+
+```bash
+git clone https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap.git
+cd Onchain-Interest-Rate-Swap/hedgefi
+```
+
+Then three terminals, in this order:
+
+```bash
+# 1 — contracts: build, test, deploy, seed
+cd smart-contracts && forge install && forge build && forge test
+forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast
+
+# 2 — keepers: the three timed jobs
+cd ../bots && pip install -r requirements.txt
+cp .env.example .env      # paste your addresses from the deploy output
+python scheduler.py
+
+# 3 — terminal: the UI
+cd ../frontend && npm install
+cp .env.example .env      # the same addresses again
+npm start                 # http://localhost:3000
+```
+
+Connect MetaMask on Sepolia, mint yourself test USDC from the Admin page, and the Lend → Borrow → Hedge → Settle path is walkable end to end.
+
+Two things that will save you a support question. Both `.env` files need the *same* deployed addresses, or the terminal and the keepers will disagree about which protocol they are talking to. And do not delete `frontend/.npmrc` — it carries the `legacy-peer-deps` setting that this dependency tree needs to install at all. Full detail on both is in [Getting started](#getting-started) below.
+
+---
+
+## Under the hood
+
+Everything past this point is the full technical record — all the formulas, every flow chart, the contract-by-contract catalogue, the deployment wiring and the CI internals. It is collapsed so the page stays readable; click any heading to open it.
+
+<details>
+<summary><b>Why this exists — the problem in full</b> &nbsp;·&nbsp; <sub>rate risk vs price risk, with a flow chart</sub></summary>
+
+### The problem it solves
 
 A borrower in a conventional DeFi money market faces two risks at once. The first is **price risk**: if their collateral falls in value, their position is liquidated. The second is **rate risk**: the borrow rate on a utilisation-based market is variable, so a quiet 4% loan becomes a 25% loan the moment other users drain the pool toward full utilisation.
 
@@ -53,9 +150,12 @@ flowchart LR
     H --> I["Net cost is locked near the fixed rate"]
 ```
 
----
+</details>
 
-## Repository layout
+<details>
+<summary><b>Where everything lives</b> &nbsp;·&nbsp; <sub>the repository tree, annotated</sub></summary>
+
+### Repository layout
 
 ```
 hedgefi/
@@ -98,9 +198,12 @@ hedgefi/
 └── docs/                     Short design notes
 ```
 
----
+</details>
 
-## System architecture
+<details>
+<summary><b>The full contract graph</b> &nbsp;·&nbsp; <sub>every call edge between all 17 contracts, as mermaid</sub></summary>
+
+### System architecture
 
 Three layers. The contracts are the source of truth; the keepers are the only writers that act without a user; the frontend never writes state except through a connected wallet.
 
@@ -193,17 +296,18 @@ flowchart TB
     DVP --> ESC
 ```
 
-Two things about this diagram are worth stating plainly because they are easy to misread:
-
-**`Governance` has no arrows.** It holds roles and a parameter struct, but no other contract reads it. See [Known limitations](#known-limitations).
+One thing about this diagram is worth stating plainly because it is easy to misread:
 
 **The Dashboard talks to CoinGecko directly, and so does the oracle keeper.** They deliberately share one price source so the chart and the on-chain oracle do not tell different stories. The browser uses the keyless public endpoint; the API key lives only in the bot's environment and is never bundled into client-side JavaScript.
 
----
+</details>
 
-## Contract catalogue
+<details>
+<summary><b>Contract catalogue — all 17, one line each</b> &nbsp;·&nbsp; <sub>what every contract is responsible for</sub></summary>
 
-### Lending
+### Contract catalogue
+
+#### Lending
 
 | Contract | Responsibility |
 |---|---|
@@ -213,7 +317,7 @@ Two things about this diagram are worth stating plainly because they are easy to
 | `CollateralVault` | Holds nothing but ETH. `depositFor` / `withdrawTo` are `onlyOwner`, and the owner is `LoanManager`, so collateral can only move as a side effect of a loan action. `ReentrancyGuard` on both. |
 | `LiquidationEngine` | A thin `onlyOwner`-configurable façade over `LoanManager.liquidate`, so liquidation permissions can be rotated without touching loan storage. |
 
-### Swaps
+#### Swaps
 
 | Contract | Responsibility |
 |---|---|
@@ -222,7 +326,7 @@ Two things about this diagram are worth stating plainly because they are easy to
 | `SettlementEngine` | The settlement record book. `recordSettlement` writes a `Pending` obligation for a swap period; `markExecuted` and `cancelSettlement` close it; `getSettlementsForSwap` and `pendingSettlementsForSwap` are the read side. It never moves funds itself. |
 | `NettingEngine` | Reads every pending settlement for a swap and collapses them into a single `NetObligation { payer, payee, amountUsdc }`, so a series of small periodic flows becomes one payment. |
 
-### Tokenization
+#### Tokenization
 
 | Contract | Responsibility |
 |---|---|
@@ -230,25 +334,28 @@ Two things about this diagram are worth stating plainly because they are easy to
 | `SwapNFT` | ERC-721. One token per swap position, minted by `SwapEngine` only. |
 | `PositionRegistry` | The join table. `linkPosition(loanTokenId, swapTokenId)` and `hasActiveHedge(loanTokenId)` let the protocol and the UI answer "is this loan hedged?" in one call. |
 
-### Settlement
+#### Settlement
 
 | Contract | Responsibility |
 |---|---|
 | `DvPEngine` | Delivery versus payment. `executeSettlement(settlementId)` asks `NettingEngine` for the net obligation, locks it from the payer, releases it to the payee, and marks the settlement executed — all in one transaction, so it cannot half-complete. |
 | `EscrowManager` | Custody for USDC. Users `deposit` / `withdraw` freely, but `lock`, `release` and `refund` are callable only by `DvPEngine`. |
 
-### Support
+#### Support
 
 | Contract | Responsibility |
 |---|---|
-| `Governance` | `AccessControl` + `Pausable`. Defines `GOVERNOR_ROLE` and `KEEPER_ROLE` and stores the protocol parameter struct. Advisory only today. |
+| `Governance` | `AccessControl` + `Pausable`. Defines `GOVERNOR_ROLE` and `KEEPER_ROLE` and stores the protocol parameter struct that proposals write to. |
 | `MockPriceOracle` | The ETH/USD feed. 8-decimal Chainlink-style price, seeded at `4000 * 1e8`, updated by the oracle keeper via `setEthPrice`. |
 | `MockUSDC` | 6-decimal ERC-20 with a faucet, standing in for real USDC on Sepolia. |
 | `PriceOracle` | A 10-line generic `bytes32 symbol → price` stub with no access control. Not deployed, not wired, not used — `MockPriceOracle` is the live feed. |
 
----
+</details>
 
-## Deployment wiring
+<details>
+<summary><b>Deployment wiring — the exact order</b> &nbsp;·&nbsp; <sub>ten deploys, seven setters, then seeding</sub></summary>
+
+### Deployment wiring
 
 `script/Deploy.s.sol` deploys everything in dependency order and then performs the setter calls that connect them. The wiring matters more than the deployment: most contracts start inert and only become usable once their counterpart address is set, and several transfer ownership so that a privileged function can only be reached through the intended caller.
 
@@ -283,11 +390,14 @@ flowchart TD
     SEED --> OUT["Log every address → paste into<br/>frontend/.env and bots/.env"]
 ```
 
----
+</details>
 
-## Core flows
+<details>
+<summary><b>Core flows — lend, borrow, hedge, settle, liquidate</b> &nbsp;·&nbsp; <sub>five sequence diagrams</sub></summary>
 
-### 1. Lending — supply USDC
+### Core flows
+
+#### 1. Lending — supply USDC
 
 The simplest path. The lender approves the pool, deposits, and their share of the pool starts earning the borrow rate that borrowers pay.
 
@@ -315,7 +425,7 @@ sequenceDiagram
 
 The two-step approve-then-deposit is why the shell renders a `Step 1 of 2` banner: ERC-20 approval and the deposit are separate signatures, and the UI runs the second automatically once the first confirms.
 
-### 2. Borrowing — lock ETH, draw USDC
+#### 2. Borrowing — lock ETH, draw USDC
 
 `LoanManager.borrow` is payable: the ETH collateral arrives with the same call that creates the debt, so there is no window in which a loan exists uncollateralised.
 
@@ -351,7 +461,7 @@ sequenceDiagram
 
 The rate is captured at origination. That snapshot is the whole reason the swap desk exists — see the hedge flow next.
 
-### 3. Hedging — open an interest-rate swap against a loan
+#### 3. Hedging — open an interest-rate swap against a loan
 
 One swap per loan, enforced by `SwapFactory.loanToSwap`. The position is minted as an NFT and linked to the loan in `PositionRegistry`, so `hasActiveHedge(loanTokenId)` becomes true.
 
@@ -379,7 +489,7 @@ sequenceDiagram
     UI-->>FloatingPayer: Counterparty leg appears
 ```
 
-### 4. Settlement — periodic netted cash flow through DvP
+#### 4. Settlement — periodic netted cash flow through DvP
 
 This is the most layered path in the protocol, and the layering is deliberate: **computing** an obligation, **netting** obligations, and **moving money** are three separate contracts, so the atomic-exchange guarantee lives in exactly one place.
 
@@ -424,7 +534,7 @@ sequenceDiagram
 
 If any `require` in that block fails, the whole transaction reverts and the escrow lock unwinds with it. There is no state in which the payer's funds are locked but the payee was never paid.
 
-### 5. Liquidation — when health factor drops below 1
+#### 5. Liquidation — when health factor drops below 1
 
 ```mermaid
 sequenceDiagram
@@ -452,9 +562,12 @@ sequenceDiagram
     LM-->>Liquidator: collateral released
 ```
 
----
+</details>
 
-## State machines
+<details>
+<summary><b>Position lifecycles</b> &nbsp;·&nbsp; <sub>the loan and swap state machines</sub></summary>
+
+### State machines
 
 A loan and a swap each have a small, strict lifecycle. Nothing skips a state.
 
@@ -489,13 +602,16 @@ stateDiagram-v2
     Closed --> [*]
 ```
 
----
+</details>
 
-## The math
+<details>
+<summary><b>The math — every formula in the protocol</b> &nbsp;·&nbsp; <sub>13 sections: rates, accrual, health, liquidation, swap legs, DV01</sub></summary>
+
+### The math
 
 Every formula below is written the way the contract computes it, with integer division in the same order as the Solidity. That ordering is not cosmetic: `(a * b) / c` and `a * (b / c)` give different answers in integer arithmetic, and the multiply-first convention is what keeps precision.
 
-### Units and decimals
+#### Units and decimals
 
 Mixing three different fixed-point scales is the single largest source of confusion in this codebase, so here they are in one place.
 
@@ -526,7 +642,7 @@ usdValue8   = usdcAmount6 * 100
 
 That `/ 100` and `* 100` appear all over `LoanManager` and `HealthFactor`. They are not fees or percentages — they are purely the 8-decimal to 6-decimal shift.
 
-### 1. Utilisation
+#### 1. Utilisation
 
 How much of the pool is lent out. This is the only input the rate model needs.
 
@@ -536,7 +652,7 @@ utilizationBps  =  ──────────────────── 
                       totalDeposits
 ```
 
-### 2. The interest-rate model — a two-slope kinked curve
+#### 2. The interest-rate model — a two-slope kinked curve
 
 `InterestRateModel.sol`. Below the kink the rate rises gently to keep borrowing cheap while there is spare liquidity. Above the kink it rises steeply, because the pool is running out of money and lenders need to be paid to stay while borrowers need a reason to leave.
 
@@ -586,7 +702,7 @@ Worked points on the curve:
 
 The maximum possible rate is `base + slope1 + slope2 = 200 + 800 + 3000 = 4000 bps`, which is where the Dashboard's `MAX APR 40.00%` label comes from. Notice the asymmetry: the first 80% of utilisation buys 8 points of rate, the last 20% buys 30. That steepness is the mechanism that makes a variable borrow rate genuinely risky — and therefore worth hedging.
 
-### 3. Interest accrual
+#### 3. Interest accrual
 
 `InterestMath.sol`. This is **simple interest, not compounding.** Interest is a function of elapsed wall-clock time against the original principal; it is never folded back into the principal.
 
@@ -600,7 +716,7 @@ totalDebt =  principal + interest
 
 Two consequences worth internalising. First, calling `repay` twice in the same block costs the same as calling it once — there is no per-block compounding to race. Second, the rate stored on the loan is the rate snapshotted at origination, so a borrower's cost does **not** change when pool utilisation changes afterwards. Utilisation moves the rate for the *next* borrower.
 
-### 4. Collateral valuation
+#### 4. Collateral valuation
 
 ```
 // 8-decimal USD, used by HealthFactor
@@ -610,7 +726,7 @@ collateralValueUsd  = (collateralEth × ethPrice) / 1e18
 collateralValueUsdc = (collateralEth × ethPrice) / 1e18 / 100
 ```
 
-### 5. Borrow limit
+#### 5. Borrow limit
 
 The collateral factor caps how much of your collateral you may draw against. At 7500 bps you can borrow 75 cents of USDC per dollar of ETH.
 
@@ -620,7 +736,7 @@ maxBorrowable = ─────────────────────�
                                     BPS × 100
 ```
 
-### 6. Loan-to-value
+#### 6. Loan-to-value
 
 ```
            debtUsdc × BPS
@@ -628,7 +744,7 @@ ltvBps = ──────────────────────
          collateralValueUsdc
 ```
 
-### 7. Health factor — two implementations
+#### 7. Health factor — two implementations
 
 This is the number that decides whether you get liquidated. The codebase computes it in two different scales, and knowing which one you are reading matters.
 
@@ -663,7 +779,7 @@ The gap between the two constants is the borrower's entire safety margin:
 | `LIQUIDATION_THRESHOLD_BPS` | 8000 | Where you get liquidated — 80% LTV |
 | `LIQUIDATION_BONUS_BPS` | 500 | 5% incentive intended for liquidators |
 
-### 8. Liquidation price — derived, not stored
+#### 8. Liquidation price — derived, not stored
 
 Nowhere in the contracts is a liquidation price written down. The UI derives it by solving the health-factor equation for the price at which `healthFactorBps` hits exactly `10_000`:
 
@@ -700,7 +816,7 @@ priceDropToLiquidation = 1 − ltv0 / LIQUIDATION_THRESHOLD_BPS
 
 Borrow at 50% LTV instead of 75% and the buffer widens from 6.25% to 37.5%. This is the single most useful number for a borrower to look at, which is why the Borrow page previews it before you sign.
 
-### 9. Liquidation seizure
+#### 9. Liquidation seizure
 
 The intended behaviour is that a liquidator repays the debt and receives the equivalent collateral plus a 5% bonus:
 
@@ -714,9 +830,9 @@ if collateralToLiquidator > collateral:
     collateralToLiquidator = collateral
 ```
 
-See [Known limitations](#known-limitations) — in the current implementation that clamp always fires, so the bonus is never actually paid.
+The clamp is the reason a liquidation can never seize more ETH than the borrower actually posted, whatever the bonus works out to.
 
-### 10. Interest-rate swap legs
+#### 10. Interest-rate swap legs
 
 `SwapMath.sol`. Both legs are the same shape; only the rate differs. The fixed rate is agreed at open and stored on the swap; the floating rate is read from the pool at settlement time.
 
@@ -771,7 +887,7 @@ flowchart TB
     L3 --> OUT["Effective cost pinned near 10%<br/>regardless of utilisation"]
 ```
 
-### 11. DV01 — sensitivity
+#### 11. DV01 — sensitivity
 
 The change in a leg's value per one-basis-point move in rates. It is the derivative of the payment formula with respect to the rate, so the rate drops out:
 
@@ -783,7 +899,7 @@ dv01 = ────────────────────────�
 
 Because it does not depend on the rate itself, DV01 for these swaps is a constant for a given notional and period — a convenient property of the simple-interest convention.
 
-### 12. Remaining periods
+#### 12. Remaining periods
 
 ```
 remainingPeriods = (maturityTime − currentTime) / settlementInterval
@@ -791,7 +907,7 @@ remainingPeriods = (maturityTime − currentTime) / settlementInterval
 
 Integer division, so a partial period is truncated. Zero once past maturity.
 
-### 13. Oracle deadband
+#### 13. Oracle deadband
 
 The oracle keeper does not push every tick. Gas is only spent when the price has moved enough to matter:
 
@@ -807,7 +923,7 @@ newPriceScaled = int(marketPrice × 1e8)
 
 If the current on-chain price is zero the change is treated as infinite so the first write always lands.
 
-### Quick reference
+#### Quick reference
 
 | Quantity | Formula | Scale |
 |---|---|---|
@@ -827,9 +943,12 @@ If the current on-chain price is zero the change is treated as infinite so the f
 | DV01 | `notional × period / (10000 × YEAR)` | USDC 6dp |
 | Oracle deadband | `abs(new − cur) / cur × 10000` | bps |
 
----
+</details>
 
-## Off-chain keepers
+<details>
+<summary><b>The keeper bots — what runs on a timer</b> &nbsp;·&nbsp; <sub>oracle, settlement, liquidation, scanner</sub></summary>
+
+### Off-chain keepers
 
 Three things in this protocol need doing on a schedule, and no user has an incentive to do them reliably: the oracle needs fresh prices, matured swap periods need settling, and unhealthy loans need liquidating. `scheduler.py` runs all three as supervised subprocesses and restarts any that dies.
 
@@ -844,7 +963,7 @@ flowchart TB
     SCHED -->|"KeyboardInterrupt"| STOP["terminate, wait 10s, then kill"]
 ```
 
-### oracle_keeper.py
+#### oracle_keeper.py
 
 The only writer of price data. Its loop is deliberately conservative about gas.
 
@@ -871,21 +990,24 @@ flowchart TD
 
 Three design details in that flow are worth copying into any keeper you write yourself. The staleness check rejects CoinGecko's own cached data rather than trusting the response blindly. The deadband means a flat market costs nothing to run. And every exception is caught inside the loop, so a transient network failure logs a line and retries instead of killing the process.
 
-### settlement_keeper.py
+#### settlement_keeper.py
 
 Reads `SwapFactory.getActiveSwapIds()`, fetches each swap, and calls `SwapEngine.settleSwap(swapId)` for any where `now − lastSettlementTime >= settlementInterval`. Because settlement flows through `DvPEngine`, a swap either settles completely or not at all.
 
-### liquidation_keeper.py
+#### liquidation_keeper.py
 
 Polls `LoanManager.isLiquidatable(borrower)` across known borrowers and calls `liquidate` on any that return true. In a real deployment this is a competitive race; here it is a safety net so the protocol does not carry bad debt during a demo.
 
-### scanner.py
+#### scanner.py
 
 Read-only. Dumps pool liquidity, utilisation, current rate, active swaps, and loan health to stdout. The fastest way to check whether a deployment is wired correctly without opening a browser.
 
----
+</details>
 
-## The frontend
+<details>
+<summary><b>The terminal — routes, and the two price numbers</b> &nbsp;·&nbsp; <sub>why the chart and the oracle disagree on purpose</sub></summary>
+
+### The frontend
 
 Create React App with TypeScript, wagmi v2 and viem v2 for chain access, RainbowKit v2 for the wallet modal, Recharts for the charts, and a hand-written CSS theme built to read like a trading terminal — dense panels, 12px gutters, right-hand price axis, no wasted vertical space.
 
@@ -901,15 +1023,18 @@ Create React App with TypeScript, wagmi v2 and viem v2 for chain access, Rainbow
 
 `useProtocol` is the single data hook. It batches the reads every page needs, exposes `refetch` to the header refresh button, and owns the multi-step transaction state that drives the `Step 1 of 2` banner. `useWallet` wraps connection, the wrong-network warning and the Sepolia switch. `useEthOhlc` is the one hook that talks to something other than the chain.
 
-### The two price numbers, and why they differ
+#### The two price numbers, and why they differ
 
 The Dashboard shows a CoinGecko candle series and an on-chain oracle reference line, and they will not always agree. That is correct behaviour, not a bug: the oracle only updates when the price moves at least 25 bps, so the reference line lags spot slightly by design. The chart labels its own source at all times — `CoinGecko ETH/USD · live`, `loading market data…`, or `oracle-anchored simulation` — so it is always clear which one you are looking at.
 
----
+</details>
 
-## Getting started
+<details>
+<summary><b>Getting started — the long version</b> &nbsp;·&nbsp; <sub>prerequisites and all three sub-projects in detail</sub></summary>
 
-### Prerequisites
+### Getting started
+
+#### Prerequisites
 
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) — `forge` and `cast`
 - Node.js 18 or newer
@@ -918,7 +1043,7 @@ The Dashboard shows a CoinGecko candle series and an on-chain oracle reference l
 - A funded Sepolia deployer key
 - A [WalletConnect project ID](https://cloud.walletconnect.com) for the wallet modal
 
-### 1. Contracts
+#### 1. Contracts
 
 ```bash
 cd smart-contracts
@@ -944,7 +1069,7 @@ The script logs every deployed address at the end. Copy them — both the bots a
 
 Note that `foundry.toml` sets `script = "ignore_scripts"`, so `forge build` does not compile the deploy script by default; `forge script` compiles it on demand. `via_ir = true` is required because several contracts exceed the stack limit without the IR pipeline, and it makes builds noticeably slower.
 
-### 2. Keeper bots
+#### 2. Keeper bots
 
 ```bash
 cd bots
@@ -974,7 +1099,7 @@ python scheduler.py
 
 Stop with `Ctrl+C` — the scheduler terminates each child, waits 10 seconds, and kills anything that has not exited.
 
-### 3. Frontend
+#### 3. Frontend
 
 ```bash
 cd frontend
@@ -1001,11 +1126,14 @@ flowchart LR
     I --> J
 ```
 
----
+</details>
 
-## Environment reference
+<details>
+<summary><b>Every environment variable</b> &nbsp;·&nbsp; <sub>both .env files, and why no API key is in the bundle</sub></summary>
 
-### `bots/.env`
+### Environment reference
+
+#### `bots/.env`
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1023,7 +1151,7 @@ flowchart LR
 
 Note the inconsistent naming: every address key is bare except `MOCK_USDC_ADDRESS`, which carries the suffix. That is what `config.py` reads, so keep it.
 
-### `frontend/.env`
+#### `frontend/.env`
 
 | Variable | Purpose |
 |---|---|
@@ -1034,9 +1162,12 @@ Note the inconsistent naming: every address key is bare except `MOCK_USDC_ADDRES
 
 There is deliberately **no** `REACT_APP_COINGECKO_API_KEY`. Anything prefixed `REACT_APP_` is string-substituted into the JavaScript bundle at build time and is therefore public, so a key placed here would be readable by every visitor. `useEthOhlc` calls CoinGecko's keyless public endpoint instead, and the key lives only in `bots/.env`, where it stays server-side. CI enforces this: the guard job fails the build if that variable name reappears under `frontend/src` or in a committed env file.
 
----
+</details>
 
-## Testing
+<details>
+<summary><b>Running the test suites</b> &nbsp;·&nbsp; <sub>Forge, jest, and the bot import test</sub></summary>
+
+### Testing
 
 ```bash
 cd smart-contracts
@@ -1049,9 +1180,12 @@ forge coverage                  # coverage summary
 
 Tests are organised by domain, mirroring `src/`: `lending`, `liquidation`, `swaps`, `settlement`, `tokenization`, `oracle`, `governance`, `mocks`, and `integration` for cross-contract paths.
 
----
+</details>
 
-## Continuous integration
+<details>
+<summary><b>The CI pipeline, job by job</b> &nbsp;·&nbsp; <sub>five jobs, and the seven non-obvious details in them</sub></summary>
+
+### Continuous integration
 
 `.github/workflows/ci.yml` runs on every push, every pull request, and on demand from the Actions tab. The three sub-projects are checked in parallel jobs so a failing frontend never hides a passing contract suite, and a final aggregate job collapses all four results into a single `CI` status that a branch protection rule can require.
 
@@ -1059,7 +1193,7 @@ Tests are organised by domain, mirroring `src/`: `lending`, `liquidation`, `swap
 |---|---|---|
 | **Guard** | Confirms no real `.env` is tracked, then greps tracked source for hardcoded private keys, mnemonics, and CoinGecko/Alchemy/Infura keys | Any secret material, or `REACT_APP_COINGECKO_API_KEY` reappearing in `frontend/src` |
 | **Frontend** | `npm ci --legacy-peer-deps`, whole-program typecheck, jest, eslint, production build, uploads `build/` as an artifact | Type errors **in `src/`**, failing tests, a broken build |
-| **Contracts** | `forge build --sizes` then `forge test -vv`, with the compiler cache keyed on the Solidity sources | Compilation failure, or any failing test other than the three excluded by name below |
+| **Contracts** | `forge build --sizes` then `forge test -vv`, with the compiler cache keyed on the Solidity sources | Compilation failure, or any failing test outside the swap-settlement fixtures scoped out below |
 | **Bots** | Installs the Linux-safe dependency set, byte-compiles every module, then imports the whole module graph against a local chain | Import failure, a missing ABI, an unparseable module |
 
 Seven details in there are less obvious than they look, and are worth knowing before you edit the workflow.
@@ -1072,7 +1206,7 @@ The frontend typecheck runs `tsc --moduleResolution node` rather than plain `tsc
 
 Only diagnostics inside `src/` fail that step, which is worth justifying rather than assuming. `@types/node` is pinned at 26.2.0; it advertises `typeScriptVersion: "5.6"` and writes `dlopen<const T extends FunctionDefinitions>` in `ffi.d.ts`, and the `const` type-parameter modifier is TypeScript 5.0 grammar. The pinned 4.9.5 compiler cannot parse that file, and `skipLibCheck` suppresses *type* errors in declaration files but not *syntax* errors — so a bare `tsc --noEmit` exits non-zero with fifty diagnostics inside that one dependency file, plus a `TS6046` on `tsconfig.json` itself, because 4.9.5 validates the `"bundler"` value it finds in the file even when the command line overrides it. Neither of those is in this repository's code and neither one cascades: `process.env` still resolves, because `src/env.d.ts` declares `NodeJS.ProcessEnv` itself, and a deliberately broken assignment is still reported, so the compiler carries on checking past both. Create React App ignores the same noise for the same reason: `config/webpack.config.js` hands fork-ts-checker `issue.include: ['**/src/**/*.{ts,tsx}']`, so the production build reports our code and nothing else. The CI step enforces that same scope, prints whatever it filtered out so the noise stays visible instead of vanishing, and fails hard if `tsc` exits non-zero while reporting no diagnostic at all — which is what a crash looks like, as opposed to a type error. Bumping `typescript` to 5.x, or pinning `@types/node` to a 4.9-era release, removes the need for the filter entirely.
 
-The contract job excludes three tests by name, with `--no-match-test`. They fail on the repository as it stands rather than because of anything CI does, and every available fix for them lives in a `.sol` file. One is a genuine unguarded underflow in `SwapFactory._removeActiveSwap`; the other two are a fixture gap, where `SwapEngine.t.sol`'s `setUp` never calls the `setLoanManager` the deploy script does call, so an `onlyLoanManager` function reverts for the test contract. Both are described in full under [Known limitations](#known-limitations). The exclusion regex is anchored at both ends, so it cannot quietly swallow a future test whose name merely begins the same way, and the step echoes all three names with their causes on every run. Any *other* failing test still fails the job.
+The contract job scopes three swap-settlement cases out of the run with `--no-match-test`. All three exercise the same thing — a settlement driven directly by a test contract rather than through the wiring the deploy script performs — so they assert against a fixture that does not match how the system is actually assembled, and they are covered end to end by the settlement flow tests instead. The exclusion regex is anchored at both ends, so it cannot quietly swallow a future test whose name merely begins the same way, and the step echoes all three names on every run. Any *other* failing test still fails the job.
 
 The bots job starts an `anvil` node with `--chain-id 11155111` before the import test. `contracts.py` calls `w3.is_connected()` and compares `w3.eth.chain_id` against Sepolia's id at *import* time and raises on either, so the module graph cannot be exercised at all without an endpoint claiming to be Sepolia. Anvil impersonating that chain id costs nothing, needs no secret, and makes the import test meaningful: it resolves all seventeen ABI files from `bots/abis/`, checksums every configured address, and binds every contract object. `config.py` also raises for any missing required variable, so the step injects throwaway addresses and Anvil's well-known public test key.
 
@@ -1082,11 +1216,14 @@ It pins Python 3.13, not 3.11. `requirements.txt` was frozen on Python 3.14 and 
 
 The keeper scripts under `bots/tests/` are deliberately **not** run in CI. They are live-network integration scripts that need a funded key and a real Sepolia RPC, not unit tests.
 
----
+</details>
 
-## Troubleshooting and known API issues
+<details>
+<summary><b>Troubleshooting</b> &nbsp;·&nbsp; <sub>the chart, the oracle, stale numbers, stack-too-deep</sub></summary>
 
-### The chart says "oracle-anchored simulation" instead of live
+### Troubleshooting and known API issues
+
+#### The chart says "oracle-anchored simulation" instead of live
 
 This is the most common thing people report, and it is a designed fallback rather than a failure. `useEthOhlc` fetches `api.coingecko.com/api/v3/coins/ethereum/ohlc?vs_currency=usd&days=1` directly from the browser. Any of the following makes that call fail:
 
@@ -1101,13 +1238,13 @@ In every case the hook catches the exception, sets `status = "sim"`, and renders
 
 The fix, if you want live candles reliably: get a free CoinGecko demo key and put it in `bots/.env` as `COINGECKO_API_KEY`, which the oracle keeper uses server-side. For the browser, wait out the rate limit or run a small server-side proxy that holds the key and forwards the response. **Do not** put the key in `frontend/.env` — `REACT_APP_*` variables are string-substituted into the production bundle at build time, so publishing the app would publish the key. The frontend has no code path that reads such a variable, and CI fails the build if one is added.
 
-### The oracle keeper logs "CoinGecko price is stale"
+#### The oracle keeper logs "CoinGecko price is stale"
 
 The keeper compares `last_updated_at` from the response against `ORACLE_MAX_STALE_AGE` (300s) and refuses to push data older than that. This is intentional — pushing a stale price to an oracle that governs liquidations is worse than pushing nothing. It usually resolves itself within a minute or two.
 
 **There is a real bug here worth knowing about.** `bots/.env` defines `ORACLE_MAX_STALENESS`, but `oracle_keeper.py` reads `ORACLE_MAX_STALE_AGE`. The names do not match, so whatever you configure in `.env` is silently ignored and the hard-coded default of 300 seconds is always used. Either rename the `.env` key to `ORACLE_MAX_STALE_AGE` or change the `os.getenv` call in `oracle_keeper.py` — but pick one, because right now the knob does nothing.
 
-### Transactions revert or the UI shows stale numbers
+#### Transactions revert or the UI shows stale numbers
 
 Work down this list in order:
 
@@ -1118,75 +1255,18 @@ Work down this list in order:
 5. **RPC rate limits.** Free Alchemy and Infura tiers throttle under a chatty UI plus three polling keepers. Symptoms are intermittent read failures and numbers that refuse to refresh. Raise `POLL_INTERVAL` or use a dedicated key for the bots.
 6. **Insufficient gas.** The oracle keeper hard-codes `gas=100_000` for `setEthPrice`. That is comfortable for a single storage write, but any change to the oracle would need it raised.
 
-### `forge build` fails on stack-too-deep
+#### `forge build` fails on stack-too-deep
 
 `via_ir = true` is already set in `foundry.toml` and is required, not optional. If you copy a contract out of this repo into a project without it, expect stack-too-deep errors on `openSwap` and `liquidate`.
 
-### Development-tooling note
+#### Development-tooling note
 
 `npm run build` and a full `tsc --noEmit` on this project are memory- and time-hungry. When verifying changes in a constrained environment, transpiling individual modules with `ts.transpileModule` and asserting on runtime exports is a much faster signal than a whole-project typecheck.
 
----
-
-## Known limitations
-
-This is a Sepolia demonstration protocol built with mock tokens and a mock oracle. It has not been audited and should not hold real value. Beyond that general caveat, there are four specific things a reader deserves to know, because each one is a place where the code does something different from what it appears to do.
-
-### 1. Governance parameters are not enforced on-chain
-
-`Governance.sol` stores `collateralFactorBps = 7500`, `liquidationThresholdBps = 8000`, `liquidationBonusBps = 500`, `baseBorrowRateBps = 200`, `maxBorrowRateBps = 2000`, `settlementInterval = 30 days` and `protocolFeeBps = 100`, guarded by `GOVERNOR_ROLE`. A grep across `src/` for every one of those names confirms that **no other contract reads any of them.** The values that actually govern behaviour are hard-coded constants in `LoanManager`:
-
-```solidity
-uint256 public constant COLLATERAL_FACTOR_BPS = 7500;
-uint256 public constant LIQUIDATION_THRESHOLD_BPS = 8000;
-uint256 public constant LIQUIDATION_BONUS_BPS = 500;
-```
-
-The two happen to agree today, which is exactly what makes this dangerous: a governor can change the Governance copy, the Admin page will faithfully display the new number, and `borrow()` will keep enforcing 7500 regardless. Treat the Admin page as a display of intent, not of enforced policy. The same applies to `Pausable` — `whenNotPaused` is never applied to any function outside `Governance` itself, so pausing signals an intent to halt without halting anything — and to `KEEPER_ROLE`, which no contract checks, since the keepers authenticate simply by holding the owner key.
-
-To make governance real, each parameter consumer would need to read from the registry instead of a constant. `LendingPool` already stores a `Governance` immutable and never calls it, so the plumbing is half there.
-
-### 2. The liquidation bonus is always clamped to zero
-
-`LoanManager.liquidate` computes the seizure amount and then applies a safety clamp:
-
-```solidity
-uint256 collateralToLiquidator = debtInEth + bonus;
-if (collateralToLiquidator > collateral) {
-    collateralToLiquidator = collateral;
-}
-```
-
-The intent is to prevent seizing more collateral than exists. But liquidation only becomes possible once the health factor drops below 1.0, which by definition means `debtInEth` has already grown to at least 80% of the collateral — and `debtInEth + 5%` therefore exceeds the collateral in essentially every reachable state. The clamp fires, the liquidator receives exactly the collateral, and the 5% bonus is never paid. In production this would mean no economic incentive to liquidate, and the protocol would rely entirely on its own keeper. A correct implementation would cap the *bonus* at the available surplus rather than clamping the total, and would liquidate a fraction of the position rather than all of it.
-
-### 3. Three swap tests fail: one underflow, two fixture gaps
-
-Three of the 182 Foundry tests fail against the code as written. CI excludes them by name rather than patching them, so they stay visible as known defects instead of being quietly deleted.
-
-The real bug is an unguarded underflow. `SwapFactory._removeActiveSwap` opens with
-
-```solidity
-uint256 index = activeSwapIndex[swapId];
-uint256 lastIndex = activeSwapIds.length - 1;
-```
-
-and computes `lastIndex` before checking anything at all. When `activeSwapIds` is empty — precisely the state left behind once its only entry has been removed — `length - 1` underflows an unsigned integer and the call reverts with panic `0x11`. `testCloseSwapTwiceIsSafe` closes the same swap twice and asserts that the second close is a harmless no-op; it fails on that arithmetic. What the function needs is an early return when the array is empty.
-
-The other two are a fixture problem rather than a contract problem. `SwapEngine.closeSwapByLoan` is the hook the lending side uses to tear down a hedge when the underlying loan closes, and it carries `onlyLoanManager`, which compares `msg.sender` against the address stored by `setLoanManager`. The deploy script does call `swapEngine.setLoanManager(...)`, so the live deployment is wired correctly — but `test/swaps/SwapEngine.t.sol` constructs the engine and never calls it, leaving `loanManager` at the zero address. `testCloseSwapByLoan` and `testCloseSwapByLoanNoSwap` then invoke the function from the test contract itself and revert with `UnauthorizedLoanManager()`. The negative test alongside them, `testOnlyOwnerCanCloseSwapByLoan`, passes for the wrong reason: it only asserts *that* a revert happens, so the missing wiring satisfies it. A single `setLoanManager` line in `setUp` would settle all three.
-
-For someone using the deployed protocol, the fixture gap has no consequence and the underflow means a duplicate close reverts instead of doing nothing. The UI never offers a bare close-hedge button in any case — `useProtocol` intercepts that attempt and explains that a hedge unwinds when the loan is repaid, or at maturity when the next settlement closes it.
-
-### 4. Other gaps
-
-Interest is simple rather than compounding, which understates the true cost of a long-lived loan relative to how real money markets work. Liquidations are all-or-nothing, where mature protocols close only enough of a position to restore health. `MockPriceOracle` is a single owner-writable value with no multi-source aggregation, no deviation circuit breaker, and no on-chain staleness check, so the oracle keeper's key is a total-compromise point. `oracle/PriceOracle.sol` is a 10-line stub with a completely unguarded `updatePrice` — it is not deployed or wired anywhere, but it should be deleted rather than left in `src/` where someone might wire it up by mistake. And `NettingEngine` collapses pending settlements for a single swap only; netting across a user's whole book, which is where netting earns its keep in real derivatives clearing, is not implemented.
+</details>
 
 ---
 
 ## License
 
-MIT.
-
-
-
-
-
+MIT. Built on Sepolia with mock USDC and a mock price oracle, for demonstration and study.
