@@ -318,7 +318,10 @@ button {
   transition: 0.15s ease;
 }
 
-.rail-button span {
+/* Hover tooltip only. Must stay scoped to .rail-label — a bare
+   `.rail-button span` also matched the .rail-icon wrapper that holds the
+   nav glyph, absolutely positioning the icons out of the rail. */
+.rail-label {
   position: absolute;
   left: calc(100% + 12px);
   padding: 6px 11px;
@@ -336,7 +339,7 @@ button {
   box-shadow: var(--shadow);
 }
 
-.rail-button:hover span {
+.rail-button:hover .rail-label {
   opacity: 1;
   transform: translateX(0);
 }
@@ -918,6 +921,18 @@ button {
   font-size: 12px;
   color: var(--muted);
   line-height: 1.5;
+}
+
+/* Wrapper around the projected-health readout. Its children were all styled
+   but this container never was, so the meter sat flush against the value. */
+.hf-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 13px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 .hf-hero-top {
@@ -1943,6 +1958,26 @@ button {
   font-weight: 500;
 }
 
+/* Pre-emptive warning when the chosen fixed rate sits below the floating rate,
+   which would make the protocol the payer — and its escrow cannot be funded. */
+.hedge-panel__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  border-radius: var(--r-sm);
+  background: var(--amber-weak);
+  color: var(--amber);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.hedge-panel__warning svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 .hedge-panel__submit {
   height: 46px;
 }
@@ -2253,7 +2288,7 @@ button {
     overflow-x: auto;
     position: static;
   }
-  .rail-button:hover span {
+  .rail-button:hover .rail-label {
     display: none;
   }
   .stat-strip,
@@ -2273,6 +2308,498 @@ button {
 @media (max-width: 460px) {
   .stat-strip {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   TOASTS — corner notifications for every transaction
+   ============================================================ */
+
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 344px;
+  max-width: calc(100vw - 36px);
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 22px;
+  gap: 11px;
+  align-items: start;
+  padding: 13px 13px 13px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  border-left-width: 3px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.toast--pending {
+  border-left-color: var(--accent);
+}
+.toast--success {
+  border-left-color: var(--up);
+}
+.toast--error {
+  border-left-color: var(--down);
+}
+.toast--info {
+  border-left-color: var(--muted);
+}
+
+.toast__icon {
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+}
+.toast--pending .toast__icon {
+  color: var(--accent);
+}
+.toast--success .toast__icon {
+  color: var(--up);
+}
+.toast--error .toast__icon {
+  color: var(--down);
+}
+.toast--info .toast__icon {
+  color: var(--muted);
+}
+
+.toast__body {
+  min-width: 0;
+}
+
+.toast__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.toast__step {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.toast__message {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.toast__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.toast__link:hover {
+  text-decoration: underline;
+}
+
+.toast__close {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.toast__close:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* Shared spin utility (used by the refresh icon and pending toasts) */
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+/* ============================================================
+   NAV BADGE + DISMISSIBLE NOTICE
+   ============================================================ */
+
+.rail-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.rail-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--down);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: "JetBrains Mono", monospace;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.notice-close {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.notice-close:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.14);
+}
+
+/* ============================================================
+   SETTLEMENT PREVIEW (DvP desk)
+   ============================================================ */
+
+.settle-preview {
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.settle-preview.ok {
+  border-color: rgba(8, 153, 129, 0.4);
+}
+
+.settle-preview.blocked {
+  border-color: rgba(242, 54, 69, 0.4);
+}
+
+/* Icon + explanation row (status line, loading line, error line) */
+.settle-preview__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.settle-preview__row svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.settle-preview__row.blocked {
+  color: var(--down);
+}
+
+.settle-preview__row.ok {
+  color: var(--up);
+}
+
+.settle-preview__row.muted {
+  color: var(--muted);
+}
+
+.settle-preview .quote-list {
+  gap: 5px;
+}
+
+/* A ghost-link used as a <button> inside a ticket must not inherit the big
+   primary-button treatment from `.trade-ticket button`. */
+.trade-ticket button.ghost-link,
+.activity-panel button.ghost-link {
+  height: auto;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.trade-ticket button.ghost-link:hover:not(:disabled),
+.activity-panel button.ghost-link:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+  filter: none;
+  box-shadow: none;
+}
+
+/* ============================================================
+   OPEN-HEDGE CARD (Swap desk)
+   ============================================================ */
+
+.hedge-active-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.hedge-active-card.is-active {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.hedge-active-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hedge-active-card__head strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 800;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text);
+}
+
+.hedge-active-card__note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* Warning variant of the ticket hint */
+.ticket-hint.warn {
+  background: var(--amber-weak);
+}
+
+.ticket-hint.warn svg {
+  color: var(--amber);
+}
+
+.ticket-hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.16);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+/* ============================================================
+   PORTFOLIO PAGE
+   ============================================================ */
+
+.portfolio-page {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.portfolio-charts {
+  display: grid;
+  grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.portfolio-charts.even {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.chart-footnote {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.quote-list__total {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.quote-list__total span {
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+/* ---- Activity feed ---- */
+
+.activity-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.activity-panel .panel-header h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.activity-panel__reset {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 5px 9px;
+}
+
+.activity-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.activity-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 8px;
+  border-radius: var(--r-sm);
+  border-left: 2px solid transparent;
+}
+
+.activity-item:hover {
+  background: var(--surface-2);
+}
+
+.activity-item.is-success {
+  border-left-color: var(--up);
+}
+.activity-item.is-error {
+  border-left-color: var(--down);
+}
+.activity-item.is-pending {
+  border-left-color: var(--accent);
+}
+.activity-item.is-info {
+  border-left-color: var(--border-strong);
+}
+
+.activity-item__icon {
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+  color: var(--muted);
+}
+
+.activity-item.is-success .activity-item__icon {
+  color: var(--up);
+}
+.activity-item.is-error .activity-item__icon {
+  color: var(--down);
+}
+.activity-item.is-pending .activity-item__icon {
+  color: var(--accent);
+}
+
+.activity-item__body {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.activity-item__body strong {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.activity-item__body > span {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.activity-item__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.activity-item__meta a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.activity-item__meta a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 1180px) {
+  .portfolio-charts,
+  .portfolio-charts.even {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .toast-stack {
+    right: 10px;
+    left: 10px;
+    bottom: 10px;
+    width: auto;
   }
 }
 
