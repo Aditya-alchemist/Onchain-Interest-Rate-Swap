@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import { ethers } from "ethers";
+import { useCallback, useState, useEffect } from "react";
 
 import { useWallet } from "./useWallet";
 import { getContract, getWriteContracts } from "../lib/contracts";
@@ -415,58 +414,37 @@ export function useLoan() {
 
 
   // ==========================================================
-  // LIQUIDATE
+  // LIQUIDATE  (routes through LiquidationEngine)
   // ==========================================================
+  //
+  // LoanManager.liquidate(tokenId, liquidator) is guarded by
+  // onlyLiquidationEngine and reverts for external callers.
+  // The public entry point is LiquidationEngine.liquidate(loanId),
+  // which checks isLiquidatable and forwards with
+  // liquidator = msg.sender.
 
-  const liquidate =
-    useCallback(
-      async (
-        tokenId: bigint | string | number,
-        liquidator: string
-      ) => {
+  const liquidate = useCallback(
+    async (tokenId: bigint | string | number) => {
+      if (!isConnected) {
+        throw new Error("Connect your wallet first.");
+      }
 
-        if (!isConnected) {
-          throw new Error(
-            "Connect your wallet first."
-          );
-        }
+      if (!isSepolia) {
+        throw new Error("Please switch to Sepolia.");
+      }
 
-        if (!isSepolia) {
-          throw new Error(
-            "Please switch to Sepolia."
-          );
-        }
+      const contracts = await getWriteContracts();
 
-        if (
-          !ethers.isAddress(liquidator)
-        ) {
-          throw new Error(
-            "Invalid liquidator address."
-          );
-        }
+      const tx = await contracts.liquidationEngine.liquidate(tokenId);
 
-        const contracts =
-          await getWriteContracts();
+      const receipt = await tx.wait();
 
-        const tx =
-          await contracts.loanManager.liquidate(
-            tokenId,
-            liquidator
-          );
+      await fetchLoan();
 
-        const receipt =
-          await tx.wait();
-
-        await fetchLoan();
-
-        return receipt;
-      },
-      [
-        isConnected,
-        isSepolia,
-        fetchLoan,
-      ]
-    );
+      return receipt;
+    },
+    [isConnected, isSepolia, fetchLoan]
+  );
 
 
   // ==========================================================
