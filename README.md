@@ -2,6 +2,8 @@
 
 **A fixed-rate credit terminal for on-chain lending, interest-rate hedging, and delivery-versus-payment settlement.**
 
+[![CI](https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap/actions/workflows/ci.yml/badge.svg)](https://github.com/Aditya-alchemist/Onchain-Interest-Rate-Swap/actions/workflows/ci.yml)
+
 HedgeFi is a full-stack DeFi protocol built for Ethereum Sepolia. It combines three products that normally live in separate applications into one trading-terminal interface:
 
 1. **An over-collateralised lending market** — deposit USDC to earn yield, lock ETH as collateral to borrow USDC at a utilisation-driven variable rate.
@@ -27,6 +29,7 @@ Everything the interface shows is read from live contracts. There is no mock dat
 - [Getting started](#getting-started)
 - [Environment reference](#environment-reference)
 - [Testing](#testing)
+- [Continuous integration](#continuous-integration)
 - [Troubleshooting and known API issues](#troubleshooting-and-known-api-issues)
 - [Known limitations](#known-limitations)
 
@@ -1027,7 +1030,7 @@ Note the inconsistent naming: every address key is bare except `MOCK_USDC_ADDRES
 | `REACT_APP_WALLETCONNECT_PROJECT_ID` | RainbowKit / WalletConnect |
 | `REACT_APP_MOCK_USDC` … `REACT_APP_LIQUIDATION_ENGINE` | The 16 contract addresses, including `REACT_APP_GOVERNANCE`, `REACT_APP_INTEREST_RATE_MODEL` and `REACT_APP_SWAP_NFT`, which the bots do not need |
 
-`REACT_APP_COINGECKO_API_KEY` is read by the code but is intentionally **left unset**. Anything prefixed `REACT_APP_` is inlined into the JavaScript bundle at build time and is therefore public. The browser uses CoinGecko's keyless endpoint instead; the key belongs only in `bots/.env`, where it stays server-side.
+There is deliberately **no** `REACT_APP_COINGECKO_API_KEY`. Anything prefixed `REACT_APP_` is string-substituted into the JavaScript bundle at build time and is therefore public, so a key placed here would be readable by every visitor. `useEthOhlc` calls CoinGecko's keyless public endpoint instead, and the key lives only in `bots/.env`, where it stays server-side. CI enforces this: the guard job fails the build if that variable name reappears under `frontend/src` or in a committed env file.
 
 ---
 
@@ -1046,6 +1049,29 @@ Tests are organised by domain, mirroring `src/`: `lending`, `liquidation`, `swap
 
 ---
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push, every pull request, and on demand from the Actions tab. The three sub-projects are checked in parallel jobs so a failing frontend never hides a passing contract suite, and a final aggregate job collapses all four results into a single `CI` status that a branch protection rule can require.
+
+| Job | What it does | Hard-fails on |
+|---|---|---|
+| **Guard** | Confirms no real `.env` is tracked, then greps tracked source for hardcoded private keys, mnemonics, and CoinGecko/Alchemy/Infura keys | Any secret material, or `REACT_APP_COINGECKO_API_KEY` reappearing in `frontend/src` |
+| **Frontend** | `npm ci`, whole-program typecheck, jest, eslint, production build, uploads `build/` as an artifact | Type errors, failing tests, a broken build |
+| **Contracts** | `forge build --sizes` then `forge test -vv` over the full suite, with the compiler cache keyed on the Solidity sources | Compilation failure or any failing test |
+| **Bots** | Installs the Linux-safe dependency set, byte-compiles every module, then imports the whole module graph against a local chain | Import failure, a missing ABI, an unparseable module |
+
+Three details in there are less obvious than they look, and are worth knowing before you edit the workflow.
+
+The frontend typecheck runs `tsc --moduleResolution node` rather than plain `tsc`. `tsconfig.json` asks for `"bundler"`, which only exists from TypeScript 5.0, while the lockfile pins 4.9.5 — so a bare `tsc` aborts on the config file itself. react-scripts resolves the same conflict the same way: `verifyTypeScriptSetup.js` *enforces* `moduleResolution: 'node'` and rewrites `tsconfig.json` on start and build. The flag reproduces the configuration the production build actually type-checks under. The build step then runs with `CI: false`, because Create React App promotes eslint warnings to errors when `CI` is truthy; warnings are surfaced by the advisory lint step instead, while genuine TypeScript errors still fail the build through fork-ts-checker.
+
+The bots job starts an `anvil` node with `--chain-id 11155111` before the import test. `contracts.py` calls `w3.is_connected()` and compares `w3.eth.chain_id` against Sepolia's id at *import* time and raises on either, so the module graph cannot be exercised at all without an endpoint claiming to be Sepolia. Anvil impersonating that chain id costs nothing, needs no secret, and makes the import test meaningful: it resolves all seventeen ABI files from `bots/abis/`, checksums every configured address, and binds every contract object. `config.py` also raises for any missing required variable, so the step injects throwaway addresses and Anvil's well-known public test key.
+
+The job also strips `pywin32` and `win32_setctime` from `requirements.txt` into a `requirements-ci.txt` before installing. Those two are Windows-only, they were captured by a `pip freeze` on the development machine, and they make the install fail outright on Linux. Nothing imports them.
+
+The keeper scripts under `bots/tests/` are deliberately **not** run in CI. They are live-network integration scripts that need a funded key and a real Sepolia RPC, not unit tests.
+
+---
+
 ## Troubleshooting and known API issues
 
 ### The chart says "oracle-anchored simulation" instead of live
@@ -1061,7 +1087,7 @@ This is the most common thing people report, and it is a designed fallback rathe
 
 In every case the hook catches the exception, sets `status = "sim"`, and renders a deterministic candle series generated by `buildCandleSeries(fallbackPrice)`. That series is a seeded `mulberry32` random walk normalised so its **final close equals the live on-chain oracle price** — so the shape is synthetic, but the current price is real, and the label under the chart says so plainly. The panel never silently shows fake data as though it were live.
 
-The fix, if you want live candles reliably: get a free CoinGecko demo key and put it in `bots/.env` as `COINGECKO_API_KEY`. For the browser, wait out the rate limit or run a small server-side proxy. **Do not** put the key in `frontend/.env` — `REACT_APP_*` variables are string-substituted into the production bundle at build time, so publishing the app would publish the key. The code reads `REACT_APP_COINGECKO_API_KEY` if present purely so a local developer can opt in knowingly; it is deliberately absent from the committed `.env`.
+The fix, if you want live candles reliably: get a free CoinGecko demo key and put it in `bots/.env` as `COINGECKO_API_KEY`, which the oracle keeper uses server-side. For the browser, wait out the rate limit or run a small server-side proxy that holds the key and forwards the response. **Do not** put the key in `frontend/.env` — `REACT_APP_*` variables are string-substituted into the production bundle at build time, so publishing the app would publish the key. The frontend has no code path that reads such a variable, and CI fails the build if one is added.
 
 ### The oracle keeper logs "CoinGecko price is stale"
 
