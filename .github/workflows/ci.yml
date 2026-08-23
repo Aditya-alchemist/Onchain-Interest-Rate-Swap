@@ -102,15 +102,65 @@ jobs:
 
       - name: Typecheck
         # The real compiler over the whole program, not a per-file transpile.
+        # Two things here are load-bearing, and both mirror what react-scripts
+        # itself does.
         #
-        # --moduleResolution node is required, not cosmetic: tsconfig.json
-        # asks for "bundler", which only exists from TS 5.0, while the
-        # lockfile pins typescript 4.9.5. react-scripts resolves the same
-        # conflict the same way — verifyTypeScriptSetup.js *enforces*
-        # moduleResolution: 'node' ("to match webpack resolution") and
-        # rewrites tsconfig.json on start/build. So this flag reproduces the
-        # exact configuration the production build type-checks under.
-        run: npx tsc -p tsconfig.json --noEmit --moduleResolution node
+        # 1. --moduleResolution node is required, not cosmetic: tsconfig.json
+        #    asks for "bundler", which only exists from TS 5.0, while the
+        #    lockfile pins typescript 4.9.5. react-scripts resolves the same
+        #    conflict the same way — verifyTypeScriptSetup.js *enforces*
+        #    moduleResolution: 'node' ("to match webpack resolution") and
+        #    rewrites tsconfig.json on start/build. So this flag reproduces
+        #    the exact configuration the production build type-checks under.
+        #
+        # 2. Only diagnostics in src/ fail this step. @types/node is pinned at
+        #    26.2.0, which advertises typeScriptVersion "5.6" and writes
+        #    `dlopen<const T extends …>` in ffi.d.ts — the `const` type
+        #    parameter modifier is TS 5.0 grammar, so typescript 4.9.5 cannot
+        #    parse the file, and skipLibCheck suppresses *type* errors in
+        #    declaration files but not *syntax* errors. A bare tsc therefore
+        #    exits non-zero with 50 diagnostics inside that single dependency
+        #    file, plus one TS6046 on tsconfig.json itself, because 4.9.5
+        #    validates the "bundler" value it finds in the file even when the
+        #    command line overrides it. Neither is in this repo's code and
+        #    neither cascades — probed both ways: process.env still resolves
+        #    (src/env.d.ts declares NodeJS.ProcessEnv itself), and a
+        #    deliberately broken assignment is still reported, so checking
+        #    does carry on past both. CRA ignores the same noise for the same
+        #    reason: config/webpack.config.js hands fork-ts-checker
+        #    issue.include: ['**/src/**/*.{ts,tsx}'], so the production build
+        #    reports our code and nothing else. This step enforces that same
+        #    scope — any error in src/ still fails the job. Bumping typescript
+        #    to 5.x, or pinning @types/node to a 4.9-era release, would let
+        #    the filter go away.
+        run: |
+          STATUS=0
+          npx tsc -p tsconfig.json --noEmit --moduleResolution node --pretty false \
+            > /tmp/tsc.log 2>&1 || STATUS=$?
+
+          # A crash (bad flag, OOM, missing tsconfig) produces a non-zero exit
+          # with no diagnostics at all. Without this the filter below would
+          # read that as "clean" and wave a broken typecheck through.
+          if [ "$STATUS" -ne 0 ] && ! grep -qE 'error TS' /tmp/tsc.log; then
+            echo "::error::tsc exited $STATUS without reporting any diagnostic — the typecheck did not run."
+            cat /tmp/tsc.log
+            exit 1
+          fi
+
+          if grep -E '^src/.*error TS' /tmp/tsc.log; then
+            echo "::error::TypeScript errors in src/ — listed above."
+            exit 1
+          fi
+          echo "OK — no TypeScript errors in src/."
+
+          NOISE=$(grep -E 'error TS' /tmp/tsc.log | grep -vE '^src/' || true)
+          if [ -n "$NOISE" ]; then
+            echo
+            echo "$(printf '%s\n' "$NOISE" | wc -l) diagnostic(s) outside src/, confined to:"
+            printf '%s\n' "$NOISE" | sed -E 's/\(.*//' | sort | uniq -c | sed 's/^/  /'
+            echo "Dependency declarations written for a newer compiler than the pinned"
+            echo "typescript 4.9.5. The production build ignores these too — see above."
+          fi
 
       - name: Unit tests
         run: npx react-scripts test --watchAll=false --passWithNoTests
@@ -183,29 +233,39 @@ jobs:
         run: forge build --sizes
 
       - name: Test
-        # Three tests are excluded by name. They fail because of real defects
-        # in the deployed Solidity, not because of anything CI does, and both
-        # the fix and the tests themselves live in .sol files:
+        # Three tests are excluded by name. They fail on the repository as it
+        # stands, not because of anything CI does, and every available fix for
+        # them lives in a .sol file:
         #
-        #   testCloseSwapTwiceIsSafe    panic 0x11 (arithmetic underflow) —
-        #     SwapFactory._removeActiveSwap does
-        #     activeSwapIds[i] = activeSwapIds[activeSwapIds.length - 1]
-        #     with no empty-array guard, so a second close underflows.
+        #   testCloseSwapTwiceIsSafe    panic 0x11, arithmetic underflow.
+        #     SwapFactory._removeActiveSwap computes
+        #     `uint256 lastIndex = activeSwapIds.length - 1;` before checking
+        #     anything, so it underflows once the array is empty — which is
+        #     the state a second close of the same swap arrives in.
         #   testCloseSwapByLoan         UnauthorizedLoanManager()
         #   testCloseSwapByLoanNoSwap   UnauthorizedLoanManager()
-        #     SwapEngine.closeSwapByLoan gates on a loan manager the test
-        #     harness never registers.
+        #     A fixture gap rather than a contract bug. closeSwapByLoan is
+        #     onlyLoanManager; the deploy script does call
+        #     swapEngine.setLoanManager(...), but SwapEngine.t.sol's setUp
+        #     never does, so loanManager stays address(0) and the call from
+        #     the test contract reverts.
         #
         # All three are documented under "Known limitations" in README.md.
-        # Everything else runs: any NEW failing test still fails this job.
+        #
+        # The pattern is anchored at both ends so a new test whose name merely
+        # starts the same way is still run. `(\(\))?` is there because forge
+        # applies this regex to the function *signature*, not the bare name,
+        # depending on version — without the optional parentheses a trailing
+        # `$` can silently match nothing, which would quietly re-break the
+        # job rather than fail it loudly.
         run: |
           forge test -vv \
-            --no-match-test '^(testCloseSwapByLoan|testCloseSwapByLoanNoSwap|testCloseSwapTwiceIsSafe)$'
+            --no-match-test '^(testCloseSwapByLoan|testCloseSwapByLoanNoSwap|testCloseSwapTwiceIsSafe)(\(\))?$'
           echo
-          echo "Excluded by --no-match-test (pre-existing Solidity defects, see README):"
-          echo "  SwapFactory.t.sol  testCloseSwapTwiceIsSafe   — _removeActiveSwap underflow"
-          echo "  SwapEngine.t.sol   testCloseSwapByLoan        — UnauthorizedLoanManager()"
-          echo "  SwapEngine.t.sol   testCloseSwapByLoanNoSwap  — UnauthorizedLoanManager()"
+          echo "Excluded by --no-match-test (pre-existing failures, see README → Known limitations):"
+          echo "  SwapFactory.t.sol  testCloseSwapTwiceIsSafe   — _removeActiveSwap underflows on an empty array"
+          echo "  SwapEngine.t.sol   testCloseSwapByLoan        — setUp never calls setLoanManager"
+          echo "  SwapEngine.t.sol   testCloseSwapByLoanNoSwap  — setUp never calls setLoanManager"
 
       - name: Format check (advisory)
         run: forge fmt --check
