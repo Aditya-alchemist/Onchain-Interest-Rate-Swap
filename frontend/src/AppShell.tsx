@@ -11,6 +11,7 @@ import {
   Shield,
   Sun,
   Wallet,
+  X,
 } from "lucide-react";
 import { useConnectModal, useAccountModal } from "@rainbow-me/rainbowkit";
 
@@ -23,6 +24,7 @@ import Marketplace from "./pages/Marketplace";
 import Portfolio from "./pages/Portfolio";
 import { useWallet } from "./hooks/useWallet";
 import { formatUsdc, useProtocol } from "./hooks/useProtocol";
+import { relativeTime, useNotifications } from "./lib/notifications";
 import "./App.css";
 
 const navItems = [
@@ -31,7 +33,7 @@ const navItems = [
   { to: "/borrow", label: "Borrow", icon: Wallet },
   { to: "/hedge", label: "Swap", icon: LineChart },
   { to: "/marketplace", label: "Settle", icon: Layers3 },
-  { to: "/portfolio", label: "Portfolio", icon: Bell },
+  { to: "/portfolio", label: "Portfolio", icon: Bell, badge: true },
   { to: "/admin", label: "Admin", icon: Shield },
 ];
 
@@ -39,6 +41,14 @@ export default function AppShell() {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("hedgefi-theme") === "dark");
   const wallet = useWallet();
   const protocol = useProtocol();
+  const { unreadCount } = useNotifications();
+
+  // Re-render once a second so the "updated Xs ago" stamp stays honest.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const handle = setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => clearInterval(handle);
+  }, []);
 
   // RainbowKit's own modal controllers — these know which connectors are
   // actually ready in the user's browser and handle the wallet picker,
@@ -94,8 +104,17 @@ export default function AppShell() {
             </div>
           </div>
 
-          <button className="icon-button" type="button" onClick={() => protocol.refetch()} title="Refresh">
-            <RefreshCw size={17} />
+          <button
+            className={`icon-button ${protocol.isLoading ? "is-loading" : ""}`}
+            type="button"
+            onClick={() => protocol.refetch()}
+            title={
+              protocol.lastUpdated
+                ? `Updated ${relativeTime(protocol.lastUpdated)} · auto-refreshes every 15s`
+                : "Refresh"
+            }
+          >
+            <RefreshCw size={17} className={protocol.isLoading ? "spin" : ""} />
           </button>
 
           <button className="icon-button" type="button" onClick={() => setDarkMode(!darkMode)} title="Theme">
@@ -116,10 +135,18 @@ export default function AppShell() {
           <aside className="side-rail">
             {navItems.map((item) => {
               const Icon = item.icon;
+              const showBadge = item.badge && unreadCount > 0;
               return (
                 <NavLink key={item.to} to={item.to} end={item.to === "/"} className="rail-button" title={item.label}>
-                  <Icon size={19} />
-                  <span>{item.label}</span>
+                  <span className="rail-icon">
+                    <Icon size={19} />
+                    {showBadge && (
+                      <span className="rail-badge" aria-label={`${unreadCount} new notifications`}>
+                        {unreadCount > 9 ? "9+" : unreadCount}
+                      </span>
+                    )}
+                  </span>
+                  <span className="rail-label">{item.label}</span>
                 </NavLink>
               );
             })}
@@ -139,16 +166,25 @@ export default function AppShell() {
               <div className="notice error-notice">{wallet.connectError.message}</div>
             )}
 
-            {protocol.error && <div className="notice error-notice">{protocol.error.message}</div>}
+            {protocol.error && (
+              <div className="notice error-notice">
+                <span>{protocol.error.message}</span>
+                <button type="button" className="notice-close" onClick={protocol.clearError} aria-label="Dismiss">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
 
-            {protocol.txStep ? (
+            {/* Only while something is actually in flight. Progress and results
+                now live in the toasts, so this no longer lingers after a tx. */}
+            {protocol.pending && protocol.txStep && (
               <div className="txstep-banner">
                 <span className="txstep-spinner" />
                 <div className="txstep-body">
                   <strong>
                     Step {protocol.txStep.current} of {protocol.txStep.total} — {protocol.txStep.label}
                   </strong>
-                  <span>Confirm in your wallet. Approve first, then the deposit runs automatically.</span>
+                  <span>{protocol.txMessage || "Confirm in your wallet."}</span>
                 </div>
                 <div className="txstep-dots">
                   {Array.from({ length: protocol.txStep.total }).map((_, i) => (
@@ -156,8 +192,6 @@ export default function AppShell() {
                   ))}
                 </div>
               </div>
-            ) : (
-              protocol.txMessage && <div className="notice tx-notice">{protocol.txMessage}</div>
             )}
 
             <Routes>
