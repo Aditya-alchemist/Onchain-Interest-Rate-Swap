@@ -1,0 +1,324 @@
+name: CI
+
+# Runs on every push and pull request. Three sub-projects are checked
+# independently so a red frontend does not hide a green contract suite.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same ref cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # 1. Guard — nothing secret may enter the repository
+  # ============================================================
+  guard:
+    name: Guard · no secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No real .env file is tracked
+        run: |
+          if git ls-files | grep -iE '(^|/)\.env$'; then
+            echo "::error::A real .env file is tracked. Only .env.example belongs in git."
+            exit 1
+          fi
+          echo "OK — only .env.example files are tracked."
+
+      - name: No keys in tracked source
+        run: |
+          # git grep, not `git ls-files | xargs grep`: ls-files also reports
+          # files deleted from the working tree, and the resulting "No such
+          # file" errors make xargs exit 123 — which silently swallows real
+          # matches and turns this guard into a no-op. git grep also gets
+          # pathspec excludes for free.
+          #
+          # smart-contracts/lib is vendored dependency source (forge-std,
+          # openzeppelin, solmate, the chainlink monorepo) whose own test
+          # fixtures contain throwaway keys, and broadcast/ holds public
+          # block and transaction hashes that look like key material.
+          EX=(
+            ':(exclude)smart-contracts/lib/**'
+            ':(exclude)smart-contracts/out/**'
+            ':(exclude)smart-contracts/cache/**'
+            ':(exclude)smart-contracts/broadcast/**'
+            ':(exclude)**/package-lock.json'
+            ':(exclude)**/*.pyc'
+          )
+          FAIL=0
+
+          if git grep -nIE '(PRIVATE_KEY|MNEMONIC)[[:space:]]*=[[:space:]]*.?(0x)?[0-9a-fA-F]{32,}' -- "${EX[@]}"; then
+            echo "::error::A private key or mnemonic is hardcoded in tracked source."
+            FAIL=1
+          fi
+
+          if git grep -nIE '(CG-[A-Za-z0-9]{12,}|(alchemy|infura)\.io/v2/[A-Za-z0-9_-]{20,})' -- "${EX[@]}"; then
+            echo "::error::A provider API key (CoinGecko / Alchemy / Infura) is hardcoded in tracked source."
+            FAIL=1
+          fi
+
+          # Scoped to code and env files rather than the whole repo: the
+          # README names this variable on purpose, to explain why it must not
+          # exist. Every REACT_APP_* value is string-substituted into the
+          # production bundle at build time, so a key here ships to every
+          # visitor's browser. It belongs in bots/.env, server-side only.
+          if git grep -nI 'REACT_APP_COINGECKO_API_KEY' -- 'frontend/src' 'frontend/.env*'; then
+            echo "::error::REACT_APP_COINGECKO_API_KEY appears in frontend code or env — that key would be public."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -eq 0 ]; then echo "OK — no secret material in tracked source."; fi
+          exit $FAIL
+
+  # ============================================================
+  # 2. Frontend — typecheck, unit tests, production build
+  # ============================================================
+  frontend:
+    name: Frontend · typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        # The real compiler over the whole program, not a per-file transpile.
+        #
+        # --moduleResolution node is required, not cosmetic: tsconfig.json
+        # asks for "bundler", which only exists from TS 5.0, while the
+        # lockfile pins typescript 4.9.5. react-scripts resolves the same
+        # conflict the same way — verifyTypeScriptSetup.js *enforces*
+        # moduleResolution: 'node' ("to match webpack resolution") and
+        # rewrites tsconfig.json on start/build. So this flag reproduces the
+        # exact configuration the production build type-checks under.
+        run: npx tsc -p tsconfig.json --noEmit --moduleResolution node
+
+      - name: Unit tests
+        run: npx react-scripts test --watchAll=false --passWithNoTests
+        env:
+          CI: true
+
+      - name: Lint (advisory)
+        run: npx eslint src --ext .js,.jsx,.ts,.tsx
+        continue-on-error: true
+
+      - name: Production build
+        # CI=false so eslint warnings do not fail the build; the advisory
+        # lint step above is where warnings are surfaced.
+        run: npm run build
+        env:
+          CI: false
+          REACT_APP_CHAIN_ID: "11155111"
+
+      - name: Report bundle size
+        run: du -sh build && du -sh build/static/js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build
+          retention-days: 7
+
+  # ============================================================
+  # 3. Contracts — Foundry build + the 182-test suite
+  # ============================================================
+  contracts:
+    name: Contracts · forge build, forge test
+    runs-on: ubuntu-latest
+    # via_ir = true in foundry.toml makes compilation slow; give it room.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: smart-contracts
+    env:
+      # foundry.toml interpolates these. They are only resolved when a
+      # command actually uses an rpc endpoint, but define them so nothing
+      # can fail on a missing variable.
+      SEPOLIA_RPC_URL: ""
+      BASE_SEPOLIA_RPC_URL: ""
+      ETHERSCAN_API_KEY: ""
+      BASESCAN_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+        # lib/ is vendored as plain files, not submodules, so no
+        # submodule checkout is required.
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Show forge version
+        run: forge --version
+
+      - name: Cache compilation output
+        uses: actions/cache@v4
+        with:
+          path: |
+            smart-contracts/cache
+            smart-contracts/out
+          key: forge-${{ runner.os }}-${{ hashFiles('smart-contracts/src/**/*.sol', 'smart-contracts/test/**/*.sol', 'smart-contracts/foundry.toml') }}
+          restore-keys: |
+            forge-${{ runner.os }}-
+
+      - name: Build
+        run: forge build --sizes
+
+      - name: Test
+        run: forge test -vv
+
+      - name: Format check (advisory)
+        run: forge fmt --check
+        continue-on-error: true
+
+  # ============================================================
+  # 4. Bots — dependency install, byte-compile, import smoke test
+  # ============================================================
+  bots:
+    name: Bots · install, compile, import
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        # contracts.py loads ABIs from the RELATIVE path "abis/<name>.json",
+        # so every python step must run from bots/.
+        working-directory: bots
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: bots/requirements.txt
+
+      # anvil only — the import smoke test below needs a JSON-RPC endpoint
+      # that reports chain id 11155111 (see the next step for why).
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Strip Windows-only pins
+        # requirements.txt was frozen on Windows and pins pywin32==312 and
+        # win32_setctime==1.2.0, neither of which installs on Linux.
+        run: |
+          grep -viE '^(pywin32|win32[_-]setctime)([=<>!~]|$)' requirements.txt > requirements-ci.txt
+          echo "Excluded from the Linux install:"
+          grep -inE '^(pywin32|win32[_-]setctime)' requirements.txt || echo "  (none)"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Byte-compile every module
+        run: python -m compileall -q . -x '(venv|__pycache__)'
+
+      - name: Start a local chain that reports as Sepolia
+        # contracts.py runs `w3.is_connected()` and `w3.eth.chain_id != 11155111`
+        # at IMPORT time and raises on either. Rather than skip the import (the
+        # most valuable check here — it resolves all 17 ABI files and checksums
+        # every configured address), point it at an anvil node spoofing the
+        # Sepolia chain id. No secrets, no real network.
+        run: |
+          nohup anvil --chain-id 11155111 --port 8545 --silent > /tmp/anvil.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -s -X POST http://127.0.0.1:8545 \
+                 -H 'content-type: application/json' \
+                 -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+                 | grep -q result; then
+              echo "anvil is up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::anvil did not become ready"; cat /tmp/anvil.log; exit 1
+
+      - name: Import smoke test
+        # config.py raises ValueError at import for any missing required
+        # variable, so feed it throwaway values. The private key is the
+        # well-known anvil test key #0 — public, worthless, never funded on
+        # a real network.
+        env:
+          SEPOLIA_RPC_URL: http://127.0.0.1:8545
+          CHAIN_ID: "11155111"
+          PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+          SWAP_FACTORY: "0x0000000000000000000000000000000000000001"
+          SWAP_ENGINE: "0x0000000000000000000000000000000000000002"
+          LENDING_POOL: "0x0000000000000000000000000000000000000003"
+          PRICE_ORACLE: "0x0000000000000000000000000000000000000004"
+          LOAN_NFT: "0x0000000000000000000000000000000000000005"
+          POSITION_REGISTRY: "0x0000000000000000000000000000000000000006"
+          COLLATERAL_VAULT: "0x0000000000000000000000000000000000000007"
+          LOAN_MANAGER: "0x0000000000000000000000000000000000000008"
+          MOCK_USDC_ADDRESS: "0x0000000000000000000000000000000000000009"
+          SETTLEMENT_ENGINE: "0x000000000000000000000000000000000000000A"
+          NETTING_ENGINE: "0x000000000000000000000000000000000000000B"
+          ESCROW_MANAGER: "0x000000000000000000000000000000000000000C"
+          DVP_ENGINE: "0x000000000000000000000000000000000000000D"
+          LIQUIDATION_ENGINE: "0x000000000000000000000000000000000000000E"
+        run: |
+          python - <<'PY'
+          # NOTE: liquidation_keeper is deliberately absent. Unlike the other
+          # two keepers it has no `if __name__ == "__main__"` guard — its
+          # `while True:` polling loop sits at module level, so importing it
+          # would hang this job until the timeout. Do not add it here.
+          import config, contracts, utils, scanner, scheduler
+          import oracle_keeper, settlement_keeper
+
+          print("config      chain id:", config.CHAIN_ID)
+          print("contracts   web3 connected:", contracts.w3.is_connected())
+          bound = [n for n in dir(contracts)
+                   if not n.startswith("_")
+                   and hasattr(getattr(contracts, n), "functions")]
+          print(f"contracts   {len(bound)} contracts bound:", ", ".join(sorted(bound)))
+          assert len(bound) >= 14, f"expected >=14 bound contracts, got {len(bound)}"
+          print("scanner     scan interval:", scanner.SCAN_INTERVAL)
+          print("scheduler   keepers:", scheduler.KEEPERS)
+          print("keeper      settlement account:", settlement_keeper.account.address)
+          print("keeper      oracle stale age:", oracle_keeper.ORACLE_MAX_STALE_AGE)
+          print("OK — every importable module loads and every ABI resolves.")
+          PY
+
+      - name: Lint (advisory)
+        run: |
+          pip install ruff
+          ruff check . --exclude venv
+        continue-on-error: true
+
+  # ============================================================
+  # 5. Aggregate result — one status to protect the branch with
+  # ============================================================
+  ci:
+    name: CI
+    if: always()
+    needs: [guard, frontend, contracts, bots]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job failed
+        run: |
+          echo "guard=${{ needs.guard.result }}"
+          echo "frontend=${{ needs.frontend.result }}"
+          echo "contracts=${{ needs.contracts.result }}"
+          echo "bots=${{ needs.bots.result }}"
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            exit 1
+          fi
+          echo "All jobs green."
