@@ -44,6 +44,9 @@ interface LoanCardProps {
   onRepay?: (loan: LoanData) => void;
   onHedge?: (loan: LoanData) => void;
 
+  /** True while the repay transaction for THIS card is in flight. */
+  busy?: boolean;
+
   showActions?: boolean;
   compact?: boolean;
 }
@@ -136,6 +139,7 @@ const LoanCard: React.FC<LoanCardProps> = ({
   onView,
   onRepay,
   onHedge,
+  busy = false,
   showActions = true,
   compact = false,
 }) => {
@@ -324,9 +328,10 @@ const LoanCard: React.FC<LoanCardProps> = ({
               <button
                 type="button"
                 className="loan-action-secondary"
+                disabled={busy}
                 onClick={() => onRepay(loan)}
               >
-                Repay
+                {busy ? "Repaying…" : "Repay"}
               </button>
             )}
         </div>
