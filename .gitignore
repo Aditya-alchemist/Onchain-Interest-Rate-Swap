@@ -1,0 +1,64 @@
+# ============================================================
+# HedgeFi — repository-wide ignore rules
+#
+# Secrets first. The per-package .gitignore files miss plain `.env`
+# (frontend/.gitignore only covers the `.env.local` variants), so every
+# real env file is listed explicitly here. Only `.env.example` files,
+# which hold placeholder values, are ever committed.
+# ============================================================
+
+# ---------- secrets / local config ----------
+.env
+.env.*
+!.env.example
+!*.env.example
+*.pem
+*.key
+secrets.json
+
+# keeper wallet keys and deployment records that embed a sender key
+bots/.env
+frontend/.env
+smart-contracts/.env
+
+# ---------- javascript / react ----------
+node_modules/
+/frontend/node_modules/
+/frontend/build/
+/frontend/coverage/
+.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+
+# ---------- python keeper bots ----------
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ---------- foundry / solidity ----------
+smart-contracts/cache/
+smart-contracts/out/
+smart-contracts/broadcast/*/31337/
+smart-contracts/broadcast/**/dry-run/
+docs/book/
+
+# ---------- editors / os ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~

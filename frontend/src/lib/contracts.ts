@@ -2,10 +2,14 @@ import {
   BrowserProvider,
   Contract,
   JsonRpcProvider,
+  JsonRpcSigner,
   Signer,
 } from "ethers";
 
+import { getWalletClient } from "@wagmi/core";
+import { wagmiConfig } from "./wagmi";
 import { ADDRESSES, CHAIN_ID } from "./addresses";
+
 
 // ============================================================
 // ABIs
@@ -45,7 +49,7 @@ declare global {
 
 
 // ============================================================
-// RPC PROVIDER
+// RPC URL
 // ============================================================
 
 const RPC_URL =
@@ -66,16 +70,13 @@ export const ABIS = {
   LoanManager: LoanManagerAbi,
   LoanNFT: LoanNFTAbi,
   PositionRegistry: PositionRegistryAbi,
-
   SwapNFT: SwapNFTAbi,
   SwapFactory: SwapFactoryAbi,
   SwapEngine: SwapEngineAbi,
-
   SettlementEngine: SettlementEngineAbi,
   NettingEngine: NettingEngineAbi,
   EscrowManager: EscrowManagerAbi,
   DvPEngine: DvPEngineAbi,
-
   LiquidationEngine: LiquidationEngineAbi,
 } as const;
 
@@ -94,16 +95,13 @@ export const CONTRACT_ADDRESSES = {
   LoanManager: ADDRESSES.LOAN_MANAGER,
   LoanNFT: ADDRESSES.LOAN_NFT,
   PositionRegistry: ADDRESSES.POSITION_REGISTRY,
-
   SwapNFT: ADDRESSES.SWAP_NFT,
   SwapFactory: ADDRESSES.SWAP_FACTORY,
   SwapEngine: ADDRESSES.SWAP_ENGINE,
-
   SettlementEngine: ADDRESSES.SETTLEMENT_ENGINE,
   NettingEngine: ADDRESSES.NETTING_ENGINE,
   EscrowManager: ADDRESSES.ESCROW_MANAGER,
   DvPEngine: ADDRESSES.DVP_ENGINE,
-
   LiquidationEngine: ADDRESSES.LIQUIDATION_ENGINE,
 } as const;
 
@@ -118,62 +116,43 @@ export function getRpcProvider(): JsonRpcProvider {
   if (!rpcProvider) {
     if (!RPC_URL) {
       throw new Error(
-        "REACT_APP_SEPOLIA_RPC_URL is not configured"
+        "REACT_APP_SEPOLIA_RPC_URL is not configured."
       );
     }
-
-    rpcProvider = new JsonRpcProvider(
-      RPC_URL,
-      CHAIN_ID
-    );
+    rpcProvider = new JsonRpcProvider(RPC_URL, CHAIN_ID);
   }
-
   return rpcProvider;
 }
 
 
 // ============================================================
-// METAMASK PROVIDER
-// ============================================================
-
-export async function getBrowserProvider(): Promise<BrowserProvider> {
-  if (!window.ethereum) {
-    throw new Error(
-      "MetaMask is not installed"
-    );
-  }
-
-  const provider = new BrowserProvider(
-    window.ethereum
-  );
-
-  return provider;
-}
-
-
-// ============================================================
-// SIGNER
+// SIGNER — uses wagmi/RainbowKit connected wallet
 // ============================================================
 
 export async function getSigner(): Promise<Signer> {
-  const provider = await getBrowserProvider();
+  const walletClient = await getWalletClient(wagmiConfig);
 
-  await provider.send(
-    "eth_requestAccounts",
-    []
-  );
+  if (!walletClient) {
+    throw new Error("Connect your wallet first.");
+  }
 
-  const network = await provider.getNetwork();
+  const { account, chain } = walletClient;
 
-  if (Number(network.chainId) !== CHAIN_ID) {
+  if (chain.id !== CHAIN_ID) {
     throw new Error(
       `Wrong network. Please switch to Sepolia (chain ID ${CHAIN_ID}).`
     );
   }
 
-  return provider.getSigner();
-}
+  // Use window.ethereum directly but check wagmi is connected
+  if (!window.ethereum) {
+    throw new Error("MetaMask is not installed.");
+  }
 
+  const provider = new BrowserProvider(window.ethereum as any);
+  const signer = await provider.getSigner(account.address);
+  return signer;
+}
 
 // ============================================================
 // GENERIC CONTRACT FACTORY
@@ -183,17 +162,11 @@ export function getContract(
   name: keyof typeof ABIS,
   runner?: JsonRpcProvider | Signer
 ): Contract {
-
-  const address =
-    CONTRACT_ADDRESSES[name];
-
-  const abi =
-    ABIS[name];
+  const address = CONTRACT_ADDRESSES[name];
+  const abi = ABIS[name];
 
   if (!address) {
-    throw new Error(
-      `Missing address for ${name}`
-    );
+    throw new Error(`Missing address for ${name}`);
   }
 
   return new Contract(
@@ -207,10 +180,6 @@ export function getContract(
 // ============================================================
 // READ-ONLY CONTRACTS
 // ============================================================
-//
-// These use the RPC provider.
-// No wallet connection is required.
-//
 
 export const contracts = {
   mockUSDC: () =>
@@ -267,15 +236,10 @@ export const contracts = {
 
 
 // ============================================================
-// SIGNED CONTRACTS
+// WRITE CONTRACTS — connected to user's wallet signer
 // ============================================================
-//
-// These connect contracts to the user's MetaMask signer.
-// Use these for write transactions.
-//
 
 export async function getWriteContracts() {
-
   const signer = await getSigner();
 
   return {
@@ -334,101 +298,58 @@ export async function getWriteContracts() {
 
 
 // ============================================================
-// WALLET INFORMATION
+// HELPERS
 // ============================================================
 
 export async function getWalletAddress(): Promise<string> {
-
   const signer = await getSigner();
-
   return signer.getAddress();
 }
 
-
-// ============================================================
-// NETWORK CHECK
-// ============================================================
-
 export async function checkNetwork(): Promise<boolean> {
-
-  const provider =
-    await getBrowserProvider();
-
-  const network =
-    await provider.getNetwork();
-
-  return Number(network.chainId) === CHAIN_ID;
+  const walletClient = await getWalletClient(wagmiConfig);
+  if (!walletClient) return false;
+  return walletClient.chain.id === CHAIN_ID;
 }
 
-
-// ============================================================
-// SWITCH TO SEPOLIA
-// ============================================================
-
 export async function switchToSepolia(): Promise<void> {
-
   if (!window.ethereum) {
-    throw new Error(
-      "MetaMask is not installed"
-    );
+    throw new Error("MetaMask is not installed.");
   }
 
   try {
-
     await window.ethereum.request({
       method: "wallet_switchEthereumChain",
-      params: [
-        {
-          chainId: "0xAA36A7",
-        },
-      ],
+      params: [{ chainId: "0xAA36A7" }],
     });
-
   } catch (error: any) {
-
-    // Sepolia isn't added to MetaMask
     if (error.code === 4902) {
-
       await window.ethereum.request({
         method: "wallet_addEthereumChain",
         params: [
           {
             chainId: "0xAA36A7",
             chainName: "Sepolia",
-
             nativeCurrency: {
               name: "Sepolia ETH",
               symbol: "ETH",
               decimals: 18,
             },
-
-            rpcUrls: [
-              RPC_URL,
-            ],
-
+            rpcUrls: [RPC_URL],
             blockExplorerUrls: [
               "https://sepolia.etherscan.io",
             ],
           },
         ],
       });
-
     } else {
-
       throw error;
-
     }
   }
 }
 
-
-// ============================================================
-// CONTRACT SUMMARY
-// ============================================================
-
 export function getContractAddress(
   name: keyof typeof CONTRACT_ADDRESSES
 ): string {
-
   return CONTRACT_ADDRESSES[name];
 }
