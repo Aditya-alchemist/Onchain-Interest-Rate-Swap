@@ -10,7 +10,7 @@
 ![Network](https://img.shields.io/badge/network-Sepolia-2dd4bf)
 ![License](https://img.shields.io/badge/license-MIT-98a0b8)
 
-**A fixed-rate credit terminal for on-chain lending, interest-rate hedging, and delivery-versus-payment settlement.**
+**A fixed-rate credit terminal for on-chain lending, interest-rate hedging, and delivery-versus-payment settlement.** 
 
 17 Solidity contracts &nbsp;·&nbsp; one React trading terminal &nbsp;·&nbsp; three Python keepers &nbsp;·&nbsp; zero mock data in the UI
 
